@@ -1,0 +1,16 @@
+name: whisker-labeler
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy<2
+  - pandas
+  - pytables
+  - h5py
+  - pydantic
+  - pip:
+    - PyQt6
+    - opencv-python-headless
+    - pyyaml
