@@ -1,341 +1,491 @@
-# UPDATE_FILE: whisker/gui/workflows/pose_estimation/widgets/pose_labeling/main.py
+# UPDATE_FILE: whisker/main.py
+#
+# Standalone launcher for the WHISKER labeler.
+#
+# The app opens an existing WHISKER *workspace* folder (the same layout the full
+# WHISKER app uses: datasets/, projects/, workflows/<wf>/labels/) and presents:
+#   * a Data Explorer (left) listing every dataset, expandable to its files;
+#   * a Project selector (toolbar) sourcing body parts / identities / behaviors;
+#   * two workflow tabs -- "Pose Estimation" (images) and
+#     "Behavior Classification" (videos) -- switchable at will.
+#
+# Selecting a dataset/file in the explorer routes it to the matching tab.
+#
+# The workspace opens automatically with NO prompt, resolved in this order
+# (mirroring full WHISKER, which defaults to the current working directory):
+#   1. --workspace <path> command-line argument
+#   2. WHISKER_WORKSPACE environment variable
+#   3. the last workspace opened (remembered in QSettings)
+#   4. the current working directory
+# Use the toolbar "Open Workspace…" button to switch at any time.
+#
+# This tool only supports HAND ANNOTATION -- there is no model training.
+import argparse
+import os
+import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, 
-    QLabel, QFileDialog, QWidget, QListWidget, QGridLayout, QMessageBox,
-    QListWidgetItem
-)
 from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QLabel, QMessageBox, QMainWindow, QFileDialog,
+    QTabWidget, QSplitter, QComboBox, QToolBar, QVBoxLayout, QDialog,
+)
 
 from whisker.gui.constants import ASSETS_DIR
-from whisker.core.dataset import Dataset, DatasetType, IMAGE_FILE_EXTENSIONS
-from whisker.core.project import Project
-from whisker.core.workflows.pose_estimation.data_structures import PoseDataset
+from whisker.core.dataset import Dataset, DatasetType
+from whisker.core.workspace import Workspace
+from whisker.gui.widgets.data_explorer import DataExplorerWidget
+from whisker.gui.dialogs.new_project_dataset_dialog import NewProjectDatasetDialog
+from whisker.gui.dialogs.import_dialog import ImportDialog
 from whisker.gui.workflows.pose_estimation.widgets.pose_labeling.widget import PoseLabelingWidget
-from PyQt6.QtGui import QIcon
+from whisker.gui.workflows.behavior_classification.widgets.behavior_labeling.widget import (
+    BehaviorLabelingWidget,
+)
+
+SETTINGS_ORG = "WHISKER"
+SETTINGS_APP = "Labeler"
+WORKSPACE_KEY = "workspace/path"
+PROJECT_KEY = "workspace/last_project"
 
 
-# --- Lightweight Mocks for Standalone Operation ---
-
-class MockDatasetOperations:
-    def __init__(self, base_path: Path, files: list[str]):
-        self.ds = Dataset(
-            name="Standalone", 
-            type=DatasetType.IMAGE_COLLECTION, 
-            base_data_path=str(base_path), 
-            files=files
-        )
-
-    def get_dataset(self, name: str) -> Dataset:
-        return self.ds
-
-class MockPoseLabelOperations:
-    def __init__(self, labels_path: Path):
-        self.labels_path = labels_path
-        self.ds = None
-
-    def get_pose_dataset(self, name: str, raise_if_missing: bool = False):
-        if self.ds is None and self.labels_path.exists():
-            try:
-                self.ds = PoseDataset.from_file(self.labels_path)
-            except Exception as e:
-                if raise_if_missing: raise e
-        return self.ds
-
-    def set_pose_labels(self, name: str, ds: PoseDataset):
-        self.ds = ds
-
-    def save_pose_labels(self, name: str):
-        if self.ds:
-            self.labels_path.parent.mkdir(parents=True, exist_ok=True)
-            self.ds.to_file(self.labels_path)
+def _default_workspace_dir() -> Path:
+    """The labeler's own workspace folder, kept inside the install directory so
+    projects, datasets, and annotations persist between launches."""
+    # main.py lives at <repo>/whisker/main.py -> parents[1] is the repo root.
+    return Path(__file__).resolve().parents[1] / "workspace"
 
 
-# --- UI Implementation ---
-
-class PathConfigDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Standalone Labeling Configuration")
-        self.settings = QSettings("WHISKER", "StandalonePoseLabeling")
-        self.inputs = {}
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        grid = QGridLayout()
-        
-        configs = [
-            ("Image Dataset Folder", "path/dataset", True),
-            ("Project File (.json)", "path/project", False),
-        ]
-
-        for i, (label_text, key, is_dir) in enumerate(configs):
-            lbl = QLabel(label_text)
-            edit = QLineEdit(self.settings.value(key, ""))
-            edit.setMinimumWidth(int(QApplication.primaryScreen().size().width() * 0.4))
-            btn = QPushButton("Browse")
-            
-            edit.setMinimumHeight(35)
-            btn.setMinimumHeight(35)
-            btn.setFixedWidth(100)
-            
-            btn.clicked.connect(lambda _, e=edit, k=key, d=is_dir: self._browse(e, k, d))
-            
-            grid.addWidget(lbl, i, 0)
-            grid.addWidget(edit, i, 1)
-            grid.addWidget(btn, i, 2)
-            self.inputs[key] = edit
-
-        layout.addLayout(grid)
-        
-        ok_btn = QPushButton("Launch Labeling Tool")
-        ok_btn.setMinimumHeight(40)
-        ok_btn.clicked.connect(self._handle_accept)
-        layout.addWidget(ok_btn)
-        
-        self.setMinimumWidth(500)
-
-    def _browse(self, edit: QLineEdit, key: str, is_dir: bool):
-        if is_dir:
-            path = QFileDialog.getExistingDirectory(self, f"Select {key}")
-        else:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Select Project File", "", "JSON files (*.json)"
-            )
-            
-        if path:
-            edit.setText(path)
-
-    def _handle_accept(self):
-        for key, edit in self.inputs.items():
-            self.settings.setValue(key, edit.text())
-        self.accept()
-
-    def get_paths(self) -> dict[str, str]:
-        return {key: edit.text() for key, edit in self.inputs.items()}
-
-
-class MainContainer(QWidget):
-    def __init__(self, paths: dict[str, str]):
+class WorkspaceWindow(QMainWindow):
+    def __init__(self, workspace: Workspace):
         super().__init__()
-        self.dataset_path = Path(paths["path/dataset"])
-        self.project_path = Path(paths["path/project"])
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.workspace: Optional[Workspace] = None
+        self._current_dataset: Optional[str] = None
 
-        # Main layout is now vertical to accommodate the footer toolbar
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
-
-        # Middle section: Sidebar + Toggle + Editor
-        middle_container = QWidget()
-        middle_layout = QHBoxLayout(middle_container)
-        middle_layout.setContentsMargins(0, 0, 0, 0)
-        middle_layout.setSpacing(0)
-
-        self._setup_sidebar(middle_layout)
-        
-        # Sleek vertical toggle strip
-        self.toggle_btn = QPushButton("‹")
-        self.toggle_btn.setFixedWidth(12)
-        self.toggle_btn.setFixedHeight(80)
-        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2d2d2d; color: #888; border: none;
-                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
-                font-size: 16px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #3d3d3d; color: #fff; }
-        """)
-        self.toggle_btn.clicked.connect(self._toggle_sidebar)
-        
-        toggle_layout = QVBoxLayout()
-        toggle_layout.addStretch()
-        toggle_layout.addWidget(self.toggle_btn)
-        toggle_layout.addStretch()
-        middle_layout.addLayout(toggle_layout)
-
-        self.pose_widget = PoseLabelingWidget()
-        middle_layout.addWidget(self.pose_widget, stretch=1)
-        outer_layout.addWidget(middle_container, stretch=1)
-
-        # Bottom Toolbar
-        self.status_bar = QWidget()
-        self.status_bar.setFixedHeight(30)
-        self.status_bar.setStyleSheet("background-color: #1e1e1e; border-top: 1px solid #333; color: #aaa;")
-        status_layout = QHBoxLayout(self.status_bar)
-        status_layout.setContentsMargins(10, 0, 10, 0)
-        
-        self.status_label = QLabel("Initializing...")
-        status_layout.addWidget(self.status_label)
-        outer_layout.addWidget(self.status_bar)
-
-        self._init_data()
+        self._build_toolbar()
+        self._build_central()
         self._connect_signals()
 
-    def _setup_sidebar(self, layout):
-        self.sidebar = QWidget()
-        self.sidebar.setFixedWidth(250)
-        self.sidebar.setObjectName("sidebar")
-        self.sidebar.setStyleSheet("#sidebar { border-right: 1px solid #333; }")
-        
-        sidebar_layout = QVBoxLayout(self.sidebar)
-        
-        # Output field
-        sidebar_layout.addWidget(QLabel("Output Labels (.h5)"))
-        out_layout = QHBoxLayout()
-        self.out_file_edit = QLineEdit(str(self.dataset_path / "standalone_labels.h5"))
-        out_btn = QPushButton("...")
-        out_btn.setFixedWidth(30)
-        out_btn.clicked.connect(self._browse_output_file)
-        out_layout.addWidget(self.out_file_edit)
-        out_layout.addWidget(out_btn)
-        sidebar_layout.addLayout(out_layout)
-        self.out_file_edit.textChanged.connect(self._on_output_file_changed)
+        self.load_workspace(workspace)
 
-        # Image list
-        sidebar_layout.addWidget(QLabel("Image Selection"))
-        self.list_widget = QListWidget()
-        sidebar_layout.addWidget(self.list_widget)
-        layout.addWidget(self.sidebar)
+    # --- Construction ---
 
-    def _toggle_sidebar(self):
-        visible = self.sidebar.isVisible()
-        self.sidebar.setVisible(not visible)
-        self.toggle_btn.setText("›" if visible else "‹")
-        self.toggle_btn.setFixedWidth(16 if visible else 12)
+    def _build_toolbar(self):
+        toolbar = QToolBar("Main")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
 
-    def _update_status_bar(self):
-        """Updates the footer with path and labeling progress."""
-        item = self.list_widget.currentItem()
-        path_str = item.data(Qt.ItemDataRole.UserRole) if item else "None"
-        
-        total = self.list_widget.count()
-        labeled_count = 0
-        for i in range(total):
-            if "✓" in self.list_widget.item(i).text():
-                labeled_count += 1
-        
-        self.status_label.setText(f"Current image: {path_str}  |  {labeled_count} / {total} Labeled")
+        new_action = QAction("➕ New Project / Dataset…", self)
+        new_action.triggered.connect(self._on_new_project_dataset)
+        toolbar.addAction(new_action)
 
-    def _init_data(self):
-        try:
-            self.project = Project.from_json(self.project_path.read_text(encoding='utf-8'))
-        except Exception as e:
-            QMessageBox.critical(self, "Project Error", f"Failed to load project:\n{e}")
-            sys.exit(1)
+        import_action = QAction("⬇ Import…", self)
+        import_action.setToolTip(
+            "Copy existing projects, datasets, and labels from a WHISKER "
+            "workspace or export folder into this labeler."
+        )
+        import_action.triggered.connect(self._on_import)
+        toolbar.addAction(import_action)
 
-        # Eager Globbing for supported image extensions
-        all_files = []
-        for ext in IMAGE_FILE_EXTENSIONS:
-            all_files.extend(self.dataset_path.rglob(f"*{ext}"))
-        
-        rel_files = [str(f.relative_to(self.dataset_path)).replace("\\", "/") for f in all_files]
-        
-        for f in sorted(rel_files):
-            item = QListWidgetItem(f)
-            item.setData(Qt.ItemDataRole.UserRole, f)  # Store pristine path in user role
-            self.list_widget.addItem(item)
+        export_action = QAction("⬆ Export Labels…", self)
+        export_action.setToolTip(
+            "Copy this dataset's labels into a folder, ready to drop into a "
+            "full WHISKER workspace."
+        )
+        export_action.triggered.connect(self._on_export_labels)
+        toolbar.addAction(export_action)
+        toolbar.addSeparator()
 
-        # Initialize Mocks
-        self.ds_ops = MockDatasetOperations(self.dataset_path, rel_files)
-        self.lbl_ops = MockPoseLabelOperations(Path(self.out_file_edit.text()))
+        toolbar.addWidget(QLabel(" Project: "))
+        self.project_combo = QComboBox()
+        self.project_combo.setMinimumWidth(220)
+        self.project_combo.currentTextChanged.connect(self._on_project_changed)
+        toolbar.addWidget(self.project_combo)
 
-        # Pass None to bypass predictions
-        self.pose_widget.set_context(self.lbl_ops, None)
-        self.pose_widget.set_project(self.project)
+    def _build_central(self):
+        self.explorer = DataExplorerWidget()
 
-        self._refresh_list_indicators()
+        self.pose_widget = PoseLabelingWidget()
+        self.behavior_widget = BehaviorLabelingWidget()
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._wrap(self.pose_widget), "Pose Estimation")
+        self.tabs.addTab(self._wrap(self.behavior_widget), "Behavior Classification")
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.explorer)
+        splitter.addWidget(self.tabs)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([280, 1100])
+        self.setCentralWidget(splitter)
+
+        self.status_label = QLabel("Open a workspace to begin.")
+        self.statusBar().addWidget(self.status_label)
+
+    @staticmethod
+    def _wrap(widget: QWidget) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(widget)
+        return container
 
     def _connect_signals(self):
-        self.list_widget.itemSelectionChanged.connect(self._on_image_selected)
-        self.pose_widget.request_select_prev_image.connect(self._select_prev)
-        self.pose_widget.request_select_next_image.connect(self._select_next)
+        self.explorer.dataset_activated.connect(self._on_dataset_activated)
+        self.explorer.file_activated.connect(self._on_file_activated)
+
+        self.pose_widget.request_select_prev_image.connect(
+            lambda: self.explorer.step_selection(-1)
+        )
+        self.pose_widget.request_select_next_image.connect(
+            lambda: self.explorer.step_selection(1)
+        )
         self.pose_widget.labels_saved.connect(self._on_labels_saved)
 
-    def _browse_output_file(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Select Output File", self.out_file_edit.text(), "HDF5 files (*.h5)"
+        self.behavior_widget.request_select_prev_video.connect(
+            lambda: self.explorer.step_selection(-1)
         )
-        if path:
-            self.out_file_edit.setText(path)
+        self.behavior_widget.request_select_next_video.connect(
+            lambda: self.explorer.step_selection(1)
+        )
+        self.behavior_widget.labels_saved.connect(self._on_labels_saved)
 
-    def _on_output_file_changed(self, new_path: str):
-        if new_path.strip():
-            self.lbl_ops.labels_path = Path(new_path.strip())
-            self.lbl_ops.ds = None  # Clear cache to force reload
-            self._refresh_list_indicators()
-            self._on_image_selected()  # Refresh the canvas context
+    # --- Workspace loading ---
 
-    def _refresh_list_indicators(self):
-        """Reads the current .h5 file and adds a checkmark to labeled frames."""
-        labeled_keys = set()
-        if self.lbl_ops.labels_path.exists():
-            try:
-                ds = PoseDataset.from_file(self.lbl_ops.labels_path)
-                labeled_keys = set(ds.frame_indices)
-            except Exception:
-                pass
-        
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            rel_path = item.data(Qt.ItemDataRole.UserRole)
-            if rel_path in labeled_keys:
-                item.setText(f"✓ {rel_path}")
-            else:
-                item.setText(rel_path)
+    def load_workspace(self, workspace: Workspace):
+        self.workspace = workspace
+        self._current_dataset = None
+        self.setWindowTitle(f"WHISKER Labeler - {workspace.base_dir}")
+        self.settings.setValue(WORKSPACE_KEY, str(workspace.base_dir))
 
-    def _on_image_selected(self):
-        item = self.list_widget.currentItem()
-        if not item: return
-        
-        rel_path = item.data(Qt.ItemDataRole.UserRole)
-        self.pose_widget.set_media(self.ds_ops, "Standalone", self.dataset_path / rel_path)
-        self._update_status_bar()
+        # Rebind label operations to the new workspace.
+        self.pose_widget.set_context(workspace.pose_labels, None)
+        self.behavior_widget.set_context(workspace.behavior_labels)
 
+        # Populate the project selector.
+        self.project_combo.blockSignals(True)
+        self.project_combo.clear()
+        project_names = sorted(workspace.projects.keys())
+        self.project_combo.addItems(project_names)
+        self.project_combo.blockSignals(False)
 
-    def _select_prev(self):
-        curr_row = self.list_widget.currentRow()
-        if curr_row > 0:
-            self.list_widget.setCurrentRow(curr_row - 1)
+        if project_names:
+            last = self.settings.value(PROJECT_KEY, "")
+            self.project_combo.setCurrentText(
+                last if last in project_names else project_names[0]
+            )
+            self._on_project_changed(self.project_combo.currentText())
+        else:
+            self._apply_project(None)
 
-    def _select_next(self):
-        curr_row = self.list_widget.currentRow()
-        if curr_row < self.list_widget.count() - 1:
-            self.list_widget.setCurrentRow(curr_row + 1)
+        self.explorer.set_workspace(workspace)
+        n_ds = len(workspace.datasets.keys())
+        if n_ds == 0 and not project_names:
+            self.status_label.setText(
+                "Empty workspace — click '➕ New Project / Dataset…' to get started."
+            )
+        else:
+            self.status_label.setText(
+                f"Workspace: {workspace.base_dir}  |  {n_ds} dataset(s)  |  "
+                f"{len(project_names)} project(s)"
+            )
+
+    # --- Create new project + dataset ---
+
+    def _on_new_project_dataset(self):
+        if not self.workspace:
+            return
+        projects = {
+            name: self.workspace.projects.get(name)
+            for name in self.workspace.projects.keys()
+        }
+        dialog = NewProjectDatasetDialog(
+            self,
+            projects=projects,
+            existing_datasets=set(self.workspace.datasets.keys()),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        spec = dialog.get_spec()
+        if not spec:
+            return
+        try:
+            self._create_project_dataset(spec)
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Creation Failed", f"Could not create project/dataset:\n{e}"
+            )
+
+    def _create_project_dataset(self, spec):
+        # 1. Project -> workspace/projects/<name>.json (skip when reusing one).
+        if not spec.use_existing_project:
+            self.workspace.projects.create_project(
+                spec.project_name,
+                body_parts=spec.body_parts,
+                identities=spec.identities,
+                skeleton=spec.skeleton,
+                behaviors=spec.behaviors,
+                warn_if_exists=lambda _msg: True,  # already confirmed in the dialog
+            )
+
+        # 2. Dataset manifest -> workspace/datasets/<name>/manifest.json.
+        #    The media stays in place; only the manifest (pointing at the source
+        #    folder) and future labels live in the labeler workspace.
+        dataset = Dataset(
+            name=spec.dataset_name,
+            type=spec.dataset_type,
+            base_data_path=str(spec.data_folder.resolve()),
+            files=spec.files,
+        )
+        self.workspace.datasets.add_dataset(
+            spec.dataset_name, dataset, warn_if_exists=lambda _msg: True
+        )
+
+        # 3. Refresh UI and jump to the new project/dataset.
+        self.load_workspace(self.workspace)
+        self.project_combo.setCurrentText(spec.project_name)
+        self.explorer.select_first_file_of_dataset(spec.dataset_name)
+        self.status_label.setText(
+            f"Created project '{spec.project_name}' and dataset "
+            f"'{spec.dataset_name}' ({len(spec.files)} files)."
+        )
+
+    # --- Project selection ---
+
+    def _on_project_changed(self, name: str):
+        if not self.workspace or not name:
+            return
+        self.settings.setValue(PROJECT_KEY, name)
+        self._apply_project(self.workspace.projects.get(name))
+
+    def _apply_project(self, project):
+        self.pose_widget.set_project(project)
+        self.behavior_widget.set_project(project)
+
+    # --- Explorer routing ---
+
+    def _on_dataset_activated(self, dataset_name: str):
+        ds = self.workspace.datasets.get(dataset_name)
+        if not ds:
+            return
+        self._current_dataset = dataset_name
+        # Switch to the tab that matches the dataset type, then jump to its
+        # first file (which triggers file_activated).
+        self.tabs.setCurrentIndex(1 if ds.type == DatasetType.VIDEO_COLLECTION else 0)
+        self.explorer.select_first_file_of_dataset(dataset_name)
+
+    def _on_file_activated(self, dataset_name: str, rel_path: str):
+        ds = self.workspace.datasets.get(dataset_name)
+        if not ds:
+            return
+        self._current_dataset = dataset_name
+        abs_path = Path(ds.base_data_path) / rel_path
+        if ds.type == DatasetType.VIDEO_COLLECTION:
+            self.tabs.setCurrentIndex(1)
+            self.behavior_widget.set_media(self.workspace.datasets, dataset_name, abs_path)
+        else:
+            self.tabs.setCurrentIndex(0)
+            self.pose_widget.set_media(self.workspace.datasets, dataset_name, abs_path)
+        self.status_label.setText(f"{dataset_name}  /  {rel_path}")
 
     def _on_labels_saved(self, dataset_name: str, media_path: str):
-        rel_path = str(Path(media_path).relative_to(self.dataset_path)).replace("\\", "/")
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == rel_path:
-                if "✓" not in item.text():
-                    item.setText(f"✓ {rel_path}")
-                break
+        self.explorer.refresh_labels_for(dataset_name)
+
+    # --- Import existing projects / datasets / labels ---
+
+    def _on_import(self):
+        if not self.workspace:
+            return
+        dialog = ImportDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        sel = dialog.get_selection()
+        if not sel:
+            return
+        try:
+            self._do_import(sel)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Failed", f"Could not import:\n{e}")
+
+    def _do_import(self, sel):
+        src = sel.source
+
+        # Warn about anything that would be overwritten in the labeler workspace.
+        conflicts = [f"project '{p}'" for p in sel.projects
+                     if p in self.workspace.projects.keys()]
+        conflicts += [f"dataset '{d}' (and its labels)" for d in sel.datasets
+                      if d in self.workspace.datasets.keys()]
+        if conflicts and QMessageBox.question(
+            self, "Overwrite?",
+            "These already exist in the labeler and will be overwritten:\n\n"
+            + "\n".join(conflicts) + "\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        def _copy(src_path: Path, dst_path: Path):
+            if src_path.is_file():
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                return True
+            return False
+
+        n_proj = 0
+        for p in sel.projects:
+            if _copy(src / "projects" / f"{p}.json",
+                     self.workspace.projects.base_dir / f"{p}.json"):
+                n_proj += 1
+
+        n_ds = n_pose = n_beh = 0
+        for d in sel.datasets:
+            if _copy(src / "datasets" / d / "manifest.json",
+                     self.workspace.datasets.base_dir / d / "manifest.json"):
+                n_ds += 1
+            if _copy(src / "workflows" / "pose_estimation" / "labels" / d / "labels.h5",
+                     self.workspace.pose_labels.base_dir / d / "labels.h5"):
+                n_pose += 1
+            if _copy(src / "workflows" / "behavior_classification" / "labels" / d / "labels.h5",
+                     self.workspace.behavior_labels.base_dir / d / "labels.h5"):
+                n_beh += 1
+
+        # Re-scan the (unchanged-object) workspace and refresh the UI.
+        self.workspace.scan()
+        self.load_workspace(self.workspace)
+
+        QMessageBox.information(
+            self, "Import Complete",
+            f"Imported {n_proj} project(s) and {n_ds} dataset(s) "
+            f"({n_pose} pose + {n_beh} behavior label file(s)).",
+        )
+
+    # --- Export labels for import into full WHISKER ---
+
+    def _on_export_labels(self):
+        if not self.workspace:
+            return
+        name = self._current_dataset
+        if not name:
+            QMessageBox.information(
+                self, "Export Labels",
+                "Select a dataset in the Data Explorer first.",
+            )
+            return
+        ds = self.workspace.datasets.get(name)
+        if not ds:
+            QMessageBox.warning(self, "Export Labels", f"Dataset '{name}' not found.")
+            return
+
+        if ds.type == DatasetType.VIDEO_COLLECTION:
+            wf_dir, kind = "behavior_classification", "behavior"
+            src = self.workspace.behavior_labels.get_behavior_labels_path(name)
+        else:
+            wf_dir, kind = "pose_estimation", "pose"
+            src = self.workspace.pose_labels.base_dir / name / "labels.h5"
+
+        if not src.exists():
+            QMessageBox.information(
+                self, "No Labels Yet",
+                f"No saved {kind} labels for '{name}' yet.\n\n"
+                "Label some media and press Save first.",
+            )
+            return
+
+        dest_root = QFileDialog.getExistingDirectory(
+            self, "Choose export destination folder"
+        )
+        if not dest_root:
+            return
+        dest_root = Path(dest_root)
+
+        # Recreate the full-WHISKER workspace layout so it drops straight in.
+        labels_dest = dest_root / "workflows" / wf_dir / "labels" / name / "labels.h5"
+        labels_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, labels_dest)
+        written = [str(labels_dest)]
+
+        # Include the dataset manifest so the export is self-contained and can
+        # be re-imported (full WHISKER simply ignores it if it already has one).
+        manifest_src = self.workspace.datasets.base_dir / name / "manifest.json"
+        if manifest_src.exists():
+            manifest_dest = dest_root / "datasets" / name / "manifest.json"
+            manifest_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(manifest_src, manifest_dest)
+            written.append(str(manifest_dest))
+
+        # Also export the matching project so behaviors/body parts line up.
+        project_name = self.project_combo.currentText()
+        if project_name:
+            proj_src = self.workspace.projects.base_dir / f"{project_name}.json"
+            if proj_src.exists():
+                proj_dest = dest_root / "projects" / f"{project_name}.json"
+                proj_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(proj_src, proj_dest)
+                written.append(str(proj_dest))
+
+        QMessageBox.information(
+            self, "Export Complete",
+            "Exported into a WHISKER-compatible layout:\n\n"
+            + "\n".join(written)
+            + "\n\nMerge the 'workflows' (and 'projects') folder into your full "
+            f"WHISKER workspace to import the {kind} labels for '{name}'.",
+        )
 
 
-if __name__ == "__main__":
+# --- Automatic workspace resolution (no prompt) ---
+
+def _open_workspace(path: Path) -> Optional[Workspace]:
+    try:
+        return Workspace(path)
+    except Exception as e:
+        print(f"[WHISKER Labeler] Could not open workspace '{path}': {e}", file=sys.stderr)
+        return None
+
+
+def _resolve_initial_workspace(cli_workspace: Optional[str]) -> Workspace:
+    """
+    Resolve the startup workspace without ever prompting the user.
+    Order: --workspace arg, WHISKER_WORKSPACE env, then the labeler's own
+    internal workspace folder (the default — keeps everything self-contained).
+    """
+    for cand in [cli_workspace, os.environ.get("WHISKER_WORKSPACE")]:
+        if cand and Path(cand).is_dir():
+            ws = _open_workspace(Path(cand))
+            if ws:
+                return ws
+
+    # Default: the labeler's own workspace inside the install directory. Create
+    # it on first launch so projects/datasets/labels persist here.
+    default = _default_workspace_dir()
+    default.mkdir(parents=True, exist_ok=True)
+    return Workspace(default)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="WHISKER standalone labeler")
+    parser.add_argument(
+        "--workspace", "-w", default=None,
+        help="Path to the WHISKER workspace folder to open (overrides the "
+             "remembered workspace and the current directory).",
+    )
+    args, _ = parser.parse_known_args()
+
     app = QApplication(sys.argv)
-    app.setApplicationName("WHISKER Standalone Pose Labeling")
-    
+    app.setApplicationName("WHISKER Labeler")
+
     icon_path = ASSETS_DIR / "favicon.ico"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    config_dialog = PathConfigDialog()
-    if config_dialog.exec() == QDialog.DialogCode.Accepted:
-        selected_paths = config_dialog.get_paths()
-        
-        container = MainContainer(paths=selected_paths)
-        container.setWindowTitle("WHISKER Standalone Pose Labeling")
-        container.showMaximized()
-        
-        if container.list_widget.count() > 0:
-            container.list_widget.setCurrentRow(0)
-            
-        sys.exit(app.exec())
-    else:
-        sys.exit(0)
+    workspace = _resolve_initial_workspace(args.workspace)
+
+    window = WorkspaceWindow(workspace)
+    window.showMaximized()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

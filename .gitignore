@@ -1,0 +1,15 @@
+# Labeler's built-in workspace (projects, datasets, and annotations created at runtime)
+/workspace/
+
+# Orphaned data dirs from older versions that used the repo root as the workspace
+/datasets/
+/projects/
+/workflows/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/

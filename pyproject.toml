@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whisker-labeler"
+version = "0.1.0"
+description = "Standalone WHISKER hand-annotation tool (pose keypoints + behavior bouts)."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy<2",
+    "pandas",
+    "tables",
+    "h5py",
+    "pydantic",
+    "PyQt6",
+    "opencv-python-headless",
+    "pyyaml",
+]
+
+[project.scripts]
+whisker-labeler = "whisker.main:main"
+
+[tool.setuptools.packages.find]
+include = ["whisker*"]
