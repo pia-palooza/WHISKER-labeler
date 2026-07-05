@@ -424,6 +424,10 @@ class ProbabilityPlotWidget(QWidget):
         left_frac = 120.0 / canvas_width
         right_frac = 1.0 - (80.0 / canvas_width)
 
+        if left_frac >= right_frac:
+            left_frac = 0.0
+            right_frac = 0.1
+
         self.figure.subplots_adjust(left=left_frac, right=right_frac)
 
     def get_current_frame(self) -> int:
