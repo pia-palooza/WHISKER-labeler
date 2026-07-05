@@ -10,11 +10,12 @@ from PyQt6.QtWidgets import (
     QSplitter, QMessageBox, QStackedWidget
 )
 
-from whisker.core import Dataset, Project
-from whisker.core.dataset_operations import DatasetOperations
-from whisker.core.workflows.pose_estimation.data_structures import PoseDataset
-from whisker.core.workflows.pose_estimation.operations.label_operations import PoseLabelOperations
-from whisker.core.workflows.pose_estimation.operations.prediction_operations import PosePredictionOperations
+from whisker.core.study.dataset import Dataset
+from whisker.core.study.project import Project
+from whisker.core.study.dataset_operations import DatasetOperations
+from whisker.services.pose_estimation.public.data_structures import PoseDataset
+from whisker.services.pose_estimation.public.label_operations import PoseLabelOperations
+from whisker.services.pose_estimation.public.prediction_operations import PosePredictionOperations
 from whisker.gui.widgets.interactive_image_label import InteractiveImageLabel
 from .model import PoseLabelingModel
 from .top_controls import PoseLabelingTopControlsWidget

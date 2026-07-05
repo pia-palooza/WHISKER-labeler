@@ -21,6 +21,7 @@ class InteractiveImageLabel(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
+        self._pixmap_item_right: Optional[QGraphicsPixmapItem] = None
         self._prediction_points: List[Dict[str, Any]] = []
         self._gt_points: List[Dict[str, Any]] = []
         self._primer_points: List[Dict[str, Any]] = []
@@ -32,6 +33,12 @@ class InteractiveImageLabel(QGraphicsView):
         self._is_drag_mode = False
         self._dragged_keypoint_info: Optional[Tuple[str, str]] = None
         
+        # Side-by-side mode state
+        self._side_by_side = False
+        self._left_name = ""
+        self._right_name = ""
+        self._show_overlay_names = True
+
         # Default Configuration: Panning enabled, interact with Right Click
         self._zoom_enabled = True
         self._point_button = Qt.MouseButton.RightButton
@@ -46,18 +53,43 @@ class InteractiveImageLabel(QGraphicsView):
         else:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
 
+    def set_side_by_side(self, enabled: bool):
+        if self._side_by_side == enabled:
+            return
+        self._side_by_side = enabled
+        if self._pixmap_item and self._pixmap_item.pixmap():
+            pix = self._pixmap_item.pixmap()
+            self.set_full_pixmap(pix)
+
+    def set_overlay_names(self, left: str, right: str):
+        self._left_name = left
+        self._right_name = right
+        self.viewport().update()
+
+    def set_show_overlay_names(self, show: bool):
+        self._show_overlay_names = show
+        self.viewport().update()
+
     def set_full_pixmap(self, pixmap: Optional[QPixmap]):
         self.scene().clear()
         self._pixmap_item = None
+        self._pixmap_item_right = None
         if pixmap and not pixmap.isNull():
             self._pixmap_item = self.scene().addPixmap(pixmap)
             
+            if self._side_by_side:
+                self._pixmap_item_right = self.scene().addPixmap(pixmap)
+                w = pixmap.width()
+                self._pixmap_item_right.setPos(w, 0)
+            
             # Inflate the scene boundary massively to allow "out of bounds" panning
             w, h = pixmap.width(), pixmap.height()
-            self.scene().setSceneRect(QRectF(-w * 2, -h * 2, w * 5, h * 5))
+            scene_factor = 6 if self._side_by_side else 5
+            self.scene().setSceneRect(QRectF(-w * 2, -h * 2, w * scene_factor, h * 5))
             
             # Fit strictly to the image itself on load, not the padded bounds
-            self.fitInView(QRectF(pixmap.rect()), Qt.AspectRatioMode.KeepAspectRatio)
+            rect = QRectF(0, 0, w * 2, h) if self._side_by_side else QRectF(pixmap.rect())
+            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
             
         self.viewport().update()
 
@@ -170,11 +202,44 @@ class InteractiveImageLabel(QGraphicsView):
         self._draw_points_set(painter, self._prediction_points, "solid")
 
         if self._show_gt_points:
-            self._draw_points_set(painter, self._gt_points, "hollow")
+            style = "solid" if self._side_by_side else "hollow"
+            offset_x = self._pixmap_item.pixmap().width() if self._side_by_side else 0.0
+            self._draw_points_set(painter, self._gt_points, style, offset_x=offset_x)
             
+        if self._side_by_side and self._show_overlay_names:
+            h = self._pixmap_item.pixmap().height()
+            w = self._pixmap_item.pixmap().width()
+            self._draw_overlay_label(painter, self._left_name, QPointF(0, h))
+            self._draw_overlay_label(painter, self._right_name, QPointF(w, h))
+
         painter.restore()
 
-    def _draw_points_set(self, painter: QPainter, identity_points_data, style: str):
+    def _draw_overlay_label(self, painter: QPainter, text: str, bottom_left_scene: QPointF):
+        if not text:
+            return
+        
+        vt = self.viewportTransform()
+        screen_pt = vt.map(bottom_left_scene)
+        
+        x = screen_pt.x() + 10
+        y = screen_pt.y() - 10
+        
+        font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        text_width = fm.horizontalAdvance(text)
+        text_height = fm.height()
+        
+        rect = QRectF(x - 6, y - text_height - 4, text_width + 12, text_height + 8)
+        
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 160))
+        painter.drawRoundedRect(rect, 4.0, 4.0)
+        
+        painter.setPen(QColor("white"))
+        painter.drawText(QPointF(x, y - 3), text)
+
+    def _draw_points_set(self, painter: QPainter, identity_points_data, style: str, offset_x: float = 0.0):
         if self._show_names:
             painter.setFont(self._font)
 
@@ -187,7 +252,7 @@ class InteractiveImageLabel(QGraphicsView):
             
             # Map all scene coordinates to screen coordinates
             screen_points = {
-                name: vt.map(pos) 
+                name: vt.map(pos + QPointF(offset_x, 0)) 
                 for name, pos in points.items()
             }
 
@@ -211,7 +276,7 @@ class InteractiveImageLabel(QGraphicsView):
 
                 for p1, p2 in lines_to_draw:
                     # Draw lines between mapped screen coordinates
-                    painter.drawLine(vt.map(p1), vt.map(p2))
+                    painter.drawLine(vt.map(p1 + QPointF(offset_x, 0)), vt.map(p2 + QPointF(offset_x, 0)))
 
             painter.setPen(Qt.PenStyle.NoPen)
             
@@ -244,3 +309,10 @@ class InteractiveImageLabel(QGraphicsView):
                         painter.setPen(pen)
                     else:
                         painter.setPen(Qt.PenStyle.NoPen)
+    
+    def resizeEvent(self, event):
+        """Ensures the image rescales when the widget size changes."""
+        super().resizeEvent(event)
+        if self._pixmap_item:
+            # We use the pixmap's rect to ensure we fit the actual image
+            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)

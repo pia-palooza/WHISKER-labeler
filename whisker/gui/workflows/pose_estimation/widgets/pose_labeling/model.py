@@ -5,9 +5,9 @@ import numpy as np
 
 from PyQt6.QtCore import QObject, QPointF, pyqtSignal
 
-from whisker.core import Project
-from whisker.core.workflows.pose_estimation.data_structures import PoseDataset, VisibilityFlag
-from whisker.core.workflows.pose_estimation.operations.label_operations import PoseLabelOperations
+from whisker.core.study.project import Project
+from whisker.services.pose_estimation.public.data_structures import PoseDataset, VisibilityFlag
+from whisker.services.pose_estimation.public.label_operations import PoseLabelOperations
 
 
 class PoseLabelingModel(QObject):

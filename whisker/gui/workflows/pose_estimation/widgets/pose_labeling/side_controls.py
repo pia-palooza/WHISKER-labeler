@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem, QTreeWidgetItemIterator, QMenu
 )
 
-from whisker.core.project import Project
+from whisker.core.study.project import Project
 from whisker.gui.constants import CHECKMARK_INDICATOR, KEYPOINT_QCOLORS
 
 class PoseLabelingSideControlsWidget(QWidget):

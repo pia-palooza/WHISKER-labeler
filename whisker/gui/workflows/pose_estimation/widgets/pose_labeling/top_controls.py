@@ -8,11 +8,12 @@ from PyQt6.QtWidgets import (
     QComboBox, QWidget, QHBoxLayout, QLabel, QPushButton, QCheckBox
 )
 
-from whisker.core.workflows.pose_estimation.operations.prediction_operations import PosePredictionOperations
-from whisker.core.dataset import Dataset
-from whisker.core.project import Project
-from whisker.core.workflows.pose_estimation.data_structures import PoseDataset
+from whisker.services.pose_estimation.public.prediction_operations import PosePredictionOperations
+from whisker.core.study.dataset import Dataset
+from whisker.core.study.project import Project
+from whisker.services.pose_estimation.public.data_structures import PoseDataset
 from whisker.gui.constants import KEYPOINT_QCOLORS
+from whisker.gui.signals import MessageBus
 
 
 class PoseLabelingTopControlsWidget(QWidget):
@@ -48,6 +49,7 @@ class PoseLabelingTopControlsWidget(QWidget):
         self.show_preds_checkbox.toggled.connect(self.accept_preds_button.setEnabled)
         self.accept_preds_button.clicked.connect(self._on_accept)
 
+        MessageBus.get().subscribe("workspace/predictions/refreshed", lambda t, p: self._populate_models())
 
     def set_context(
         self, 

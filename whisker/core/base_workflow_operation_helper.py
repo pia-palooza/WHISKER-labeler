@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import  Optional, Callable
 
 from .base_operation_helper import BaseOperationHelper
-from .dataset_operations import DatasetOperations
-from .project_operations import ProjectOperations
+from .study.dataset_operations import DatasetOperations
+from .study.project_operations import ProjectOperations
 
 class BaseWorkflowOperationsHelper(BaseOperationHelper):
     """Base class for all operation helpers to share common utility methods."""

@@ -1,0 +1,1 @@
+from whisker.gui.workflows.pose_estimation.widgets.training_settings import PoseEstimationTrainingSettingsWidget as WhiskerSettingsWidget
