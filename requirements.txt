@@ -6,4 +6,6 @@ pydantic
 PyQt6
 opencv-python-headless
 pyyaml
+matplotlib
+scipy
 pytest

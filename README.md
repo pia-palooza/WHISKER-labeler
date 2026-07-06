@@ -1,39 +1,46 @@
 # WHISKER Labeler
 
-A standalone desktop app for **hand-annotating** animal data:
+A **hand-annotation** build of the full WHISKER application. It reuses WHISKER's
+interface, workspace/project structure, and on-disk data format, but with **all
+model training and prediction removed** — so it runs anywhere with no GPU and no
+deep-learning frameworks. Use it to:
 
-- **Pose keypoints** on images / extracted frames (the *Pose Estimation* tab)
-- **Behavior bouts** on videos (the *Behavior Classification* tab)
+- place **pose keypoints** on images / extracted frames (the **Pose Estimation** workflow)
+- mark **behavior bouts** on videos (the **Behavior Classification** workflow)
 
-It is a lightweight spin-off of the main WHISKER analysis pipeline — no GPU and
-no deep-learning libraries required — and it saves labels in the **exact HDF5
-format the full WHISKER app uses**, so your annotations import straight back into
-WHISKER for model training.
+Labels are saved in the **exact HDF5 layout the full WHISKER app uses**, so your
+annotations move straight into WHISKER for model training.
 
-> This tool is for **hand annotation only**. It does not train models.
+> **Hand annotation only.** The labeler does not train models or generate
+> predictions — those parts of WHISKER are intentionally trimmed out.
 
 ---
 
-## How it works
+## What's in the app
 
-- **One window, two tabs.** Switch freely between **Pose Estimation** (images) and
-  **Behavior Classification** (videos) at the top.
-- **A self-contained workspace.** All of your projects, datasets, and labels live
-  inside the app's own `workspace/` folder (created next to the code). Nothing is
-  ever written to your original videos/frames, and the app never touches a full
-  WHISKER workspace. Everything you create reloads automatically next launch.
-- **A Data Explorer** on the left lists every dataset and its files, with a ✓ on
-  files you've already labeled.
-- **Projects** define the labeling targets — body parts, identities (animals),
-  behaviors, and an optional skeleton. A dataset is just a folder of media tied to
-  a project.
-- **Import / Export** move data between this labeler and a full WHISKER workspace.
+It's the same shell as full WHISKER, so if you've used WHISKER it will feel
+identical:
+
+- A left **Navigation** panel where you pick a **Workflow** — *Pose Estimation*
+  or *Behavior Classification* — and a **Task**.
+- A **Data Explorer** listing every dataset and its files, with a ✓ on files
+  you've already labeled.
+- A menu bar (**File / Edit / Selection / View / Tools / Help**) and a
+  collapsible console at the bottom.
+
+**Tasks available:** **Welcome**, **Projects**, **Info**, **Jobs**, and
+**Label**. The training, prediction, evaluation, and figure-maker tasks from full
+WHISKER are removed in this build.
+
+**Projects** define the labeling targets — body parts, identities (animals),
+behaviors, and an optional skeleton. A **dataset** is a folder of media tied to a
+project. Your source media is only ever read, never modified.
 
 ---
 
 ## Requirements
 
-- **Miniconda or Anaconda** (recommended) — <https://docs.conda.io/en/latest/miniconda.html>
+- **Miniconda or Anaconda** — <https://docs.conda.io/en/latest/miniconda.html>
 - **Python 3.11** (installed automatically by the conda environment below)
 - Windows, macOS, or Linux
 
@@ -50,95 +57,70 @@ cd WHISKER-labeler
 conda env create -f environment.yaml
 conda activate whisker-labeler
 
-# 3. Install the launcher command
+# 3. Install the package (editable)
 pip install -e .
 ```
 
-That's it. Step 3 installs a `whisker-labeler` command and lets the app run from
-any folder.
-
----
-
-## Updating an existing install
-
-If you already installed it and just want the latest version:
-
-```bash
-cd WHISKER-labeler
-git pull
-conda activate whisker-labeler
-```
-
-Because it was installed in "editable" mode (`pip install -e .`), a `git pull` is
-usually all you need — the new code is picked up automatically.
-
-Only if the dependencies or launcher changed, also run:
-
-```bash
-conda env update -f environment.yaml --prune
-pip install -e .
-```
+Step 3 installs the `whisker` package and its dependencies so the app can be run
+from any folder.
 
 ---
 
 ## Launching
 
+**Windows:** double-click **`launch.bat`** in the `WHISKER-labeler` folder.
+
+**Any platform:**
+
 ```bash
 conda activate whisker-labeler
-whisker-labeler
+python -m whisker.main
 ```
 
-**Windows:** you can also just **double-click `launch.bat`** in the
-`WHISKER-labeler` folder.
-
-The app opens straight into its built-in workspace — there is **no folder prompt**.
-The first time you run it the workspace is empty; you fill it using **New Project /
-Dataset…** or **Import…** (below).
+On first launch the app opens a WHISKER **workspace** — by default the current
+folder, or the last workspace you used. Use **File → Open Workspace…** to point it
+at a different workspace at any time; recently used workspaces are remembered
+under **File → Recent Workspaces**.
 
 ---
 
-## Loading data into the labeler
+## Workspaces & where your data lives
 
-There are two ways to get datasets in. Both write into the app's own workspace and
-**never modify your source media**.
+The labeler reads and writes a standard WHISKER **workspace** folder. The layout
+is identical to full WHISKER, so you can point the labeler straight at a WHISKER
+workspace (or hand one back):
 
-### Option A — Create a new project + dataset
+```
+<workspace>/
+  projects/<name>.json                                          # label definitions (body parts, identities, behaviors, skeleton)
+  datasets/<name>/manifest.json                                 # which media files belong to a dataset
+  workflows/pose_estimation/labels/<dataset>/labels.h5          # pose labels
+  workflows/behavior_classification/labels/<dataset>/labels.h5  # behavior labels
+```
 
-1. Click **➕ New Project / Dataset…** in the toolbar.
-2. **Data Folder** — browse to a folder containing your media:
-   - a folder of **videos** → becomes a Behavior dataset
-   - a folder of **images / extracted frames** → becomes a Pose dataset
-   - (the app auto-detects which, and finds files in sub-folders too)
-3. **Dataset Name** — defaults to the folder name; change if you like.
-4. **Project** — either:
-   - **➕ Create new project…** and define **Body Parts**, **Identities**,
-     **Behaviors**, and an optional **Skeleton** (all comma-separated, e.g.
-     `nose, left_ear, right_ear, tail_base`), **or**
-   - pick an **existing project** to reuse its definition for this new dataset.
-5. Click **Create**. The dataset appears in the Data Explorer and is ready to label.
-
-### Option B — Import existing projects / datasets / labels
-
-Use this to pull work in from a **full WHISKER workspace** or a **previous export**.
-
-1. Click **⬇ Import…**.
-2. **Source Folder** — browse to a WHISKER workspace (a folder with
-   `projects/` and/or `datasets/`) or a folder previously produced by Export.
-3. Check the **projects** and **datasets** you want (datasets are tagged with the
-   labels they contain — `pose` / `behavior`). **Select All** is available.
-4. Click **Import**. The selected projects, datasets, and their existing labels are
-   **copied into your labeler**. The source folder is only read, never changed.
-
-> Projects appear in the toolbar **Project** dropdown; datasets appear in the Data
-> Explorer.
+Workspace data folders (`workspace/`, `datasets/`, `projects/`, `workflows/`) are
+excluded from version control, so your annotations stay local and private. Back
+them up if you want to keep copies.
 
 ---
 
-## Labeling
+## Typical workflow
 
-Pick a project in the toolbar dropdown, then click a file in the Data Explorer.
-Image datasets open in the **Pose Estimation** tab; video datasets in the
-**Behavior Classification** tab. Press **`Ctrl+S`** to save; a ✓ marks labeled files.
+1. **Open or create a workspace** — File → Open Workspace…, or just use the
+   default folder.
+2. **Create a project** — File → New Project… — and define its **Body Parts**,
+   **Identities**, **Behaviors**, and optional **Skeleton** (comma-separated,
+   e.g. `nose, left_ear, right_ear, tail_base`). Or import an existing project
+   (below).
+3. **Add a dataset** — File → New Dataset… — pointing at a folder of **images /
+   extracted frames** (→ Pose) or **videos** (→ Behavior).
+4. In the **Navigation** panel pick the **Workflow** (Pose or Behavior) and the
+   **Label** task.
+5. Pick the active **project**, then click a file in the **Data Explorer** and
+   annotate. Move between files with the **← / →** keys or the Data Explorer;
+   labeled files show a ✓.
+6. **Save** (`Ctrl+S`). Labels are written to the workspace's `labels.h5` files
+   shown above.
 
 ### Pose Estimation (keypoints on images)
 
@@ -147,13 +129,16 @@ place it; drag to adjust.
 
 | Key | Action |
 | --- | --- |
-| `Q` | Toggle drag/move mode |
+| `Q` | Toggle drag / move mode |
 | `W` / `S` | Previous / next body part |
 | `A` / `D` | Previous / next identity |
-| `Delete` / `X` | Clear selected keypoint |
+| `Delete` / `X` | Clear the selected keypoint |
 | `Ctrl+Delete` | Clear all keypoints on this image |
-| `M` / `N` | Previous / next image |
+| `Ctrl+I` | Swap identities |
+| `Ctrl+N` | Toggle body-part name labels |
 | `Ctrl+S` | Save |
+
+Move between images with **← / →** or the Data Explorer.
 
 ### Behavior Classification (bouts on videos)
 
@@ -171,49 +156,50 @@ create the bout. Bouts appear in the table and on the timeline strip.
 | `Esc` | Clear the editor (start a new bout) |
 | `Delete` | Remove the selected bout |
 | `O` | Toggle the on-video behavior overlay |
-| `M` / `N` | Previous / next video |
 | `Ctrl+S` | Save |
 
----
-
-## Exporting labels back to full WHISKER
-
-1. Select the dataset you want in the Data Explorer.
-2. Click **⬆ Export Labels…** and choose a destination folder.
-3. The labeler writes the labels (plus the matching project and dataset manifest)
-   into a **WHISKER-compatible layout**:
-   ```
-   <destination>/workflows/<pose_estimation|behavior_classification>/labels/<dataset>/labels.h5
-   <destination>/projects/<project>.json
-   <destination>/datasets/<dataset>/manifest.json
-   ```
-4. Merge that `workflows` (and `projects`) folder into your full WHISKER workspace.
-   WHISKER discovers the labels on its next scan — no conversion needed.
+Move between videos with the Data Explorer.
 
 ---
 
-## Where your data lives
+## Moving data to / from full WHISKER
 
-Everything you create or import is stored under the app's own workspace:
+Because the labeler shares WHISKER's workspace layout, the simplest path is to
+point it directly at a full WHISKER workspace — no conversion needed. You can
+also:
 
+- **Import existing pose labels** — File → Import Pose Labels…
+- **Export** — the File → Export submenu (behavior labels, bouts, charts).
+
+Merge an exported `workflows/` (and `projects/`) folder into your full WHISKER
+workspace; WHISKER discovers the labels on its next scan.
+
+---
+
+## Updating an existing install
+
+```bash
+cd WHISKER-labeler
+git pull
+conda activate whisker-labeler
 ```
-WHISKER-labeler/workspace/
-  projects/<name>.json                                   # label definitions
-  datasets/<name>/manifest.json                          # which media files
-  workflows/pose_estimation/labels/<dataset>/labels.h5   # pose labels
-  workflows/behavior_classification/labels/<dataset>/labels.h5  # behavior labels
-```
 
-This `workspace/` folder is intentionally excluded from version control, so your
-annotations stay local and private. Back it up if you want to keep copies.
+Because it was installed in editable mode (`pip install -e .`), a `git pull` is
+usually all you need. Only if the dependencies changed, also run:
+
+```bash
+conda env update -f environment.yaml --prune
+pip install -e .
+```
 
 ---
 
 ## Notes & tips
 
-- **Behavior names must match** the project you'll train with in full WHISKER
-  (same spelling/case) for the labels to line up.
-- A dataset's **video/frame filenames** are how labels are matched, so keep them
+- **Behavior and body-part names must match** the WHISKER project you'll train
+  with (same spelling/case) so the labels line up.
+- A dataset's **filenames** are how labels are matched to media — keep them
   consistent with your full WHISKER datasets.
 - Hand the tool to a collaborator by sharing this repo; they install it the same
-  way, create or import projects, label, and send you the **Export**ed folder.
+  way, create or import projects, label, and send the workspace (or exported
+  labels) back.

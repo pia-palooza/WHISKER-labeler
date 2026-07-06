@@ -2,10 +2,11 @@
 REM ============================================================================
 REM  WHISKER Labeler - double-click launcher
 REM
-REM  Opens the labeler using its own built-in workspace (stored inside this
-REM  folder under \workspace), so your projects, datasets, and annotations are
-REM  always here and load automatically. Create projects/datasets from inside
-REM  the app with the "New Project / Dataset..." button.
+REM  Launches the WHISKER Labeler GUI. On first run it opens a WHISKER workspace
+REM  folder (defaulting to this folder, or the last one you used); use
+REM  File > Open Workspace... inside the app to switch at any time. Create
+REM  projects and datasets from the app's File menu, or import them from a full
+REM  WHISKER workspace.
 REM
 REM  On another machine, only ENV_PY below may need editing (the python.exe of
 REM  the `whisker-labeler` conda env).

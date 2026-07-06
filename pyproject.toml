@@ -16,6 +16,8 @@ dependencies = [
     "PyQt6",
     "opencv-python-headless",
     "pyyaml",
+    "matplotlib",
+    "scipy",
 ]
 
 [project.scripts]
