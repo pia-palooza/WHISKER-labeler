@@ -5,8 +5,8 @@ from typing import Optional, List, Dict
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QRectF, QTimer, QPointF
-from PyQt6.QtGui import QPixmap, QResizeEvent, QPainter, QColor, QPen, QBrush, QImage, QFont
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QRectF, QTimer, QPointF, QSize
+from PyQt6.QtGui import QPixmap, QResizeEvent, QPainter, QColor, QPen, QBrush, QImage, QFont, QIcon, QPolygonF
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import (
@@ -19,6 +19,34 @@ from PyQt6.QtWidgets import (
 
 from whisker.gui.constants import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS
 from whisker.gui.widgets.info_overlay import InfoOverlay
+
+
+_MEDIA_ICON_GREY = QColor("#808080")
+
+
+def _make_media_icon(kind: str, size: int = 20, color: QColor = _MEDIA_ICON_GREY) -> QIcon:
+    """Draw a grey play / pause / step icon so playback controls stay visible
+    on every theme (the Qt standard icons can render near-white)."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setBrush(color)
+    p.setPen(Qt.PenStyle.NoPen)
+    s = float(size)
+    if kind == "play":
+        p.drawPolygon(QPolygonF([QPointF(s*0.30, s*0.20), QPointF(s*0.30, s*0.80), QPointF(s*0.80, s*0.50)]))
+    elif kind == "pause":
+        p.drawRect(QRectF(s*0.30, s*0.22, s*0.14, s*0.56))
+        p.drawRect(QRectF(s*0.56, s*0.22, s*0.14, s*0.56))
+    elif kind == "back":   # |◀  step back
+        p.drawRect(QRectF(s*0.22, s*0.22, s*0.10, s*0.56))
+        p.drawPolygon(QPolygonF([QPointF(s*0.82, s*0.20), QPointF(s*0.82, s*0.80), QPointF(s*0.40, s*0.50)]))
+    elif kind == "fwd":    # ▶|  step forward
+        p.drawPolygon(QPolygonF([QPointF(s*0.18, s*0.20), QPointF(s*0.18, s*0.80), QPointF(s*0.60, s*0.50)]))
+        p.drawRect(QRectF(s*0.68, s*0.22, s*0.10, s*0.56))
+    p.end()
+    return QIcon(pm)
 
 
 class ClickableSlider(QSlider):
@@ -214,13 +242,13 @@ class MediaControls(QWidget):
         btns = QHBoxLayout()
         btns.setSpacing(2)
         
-        self.btn_step_back = self._icon_btn(QStyle.StandardPixmap.SP_MediaSeekBackward, "Step Back")
+        self.btn_step_back = self._icon_btn("back", "Step Back")
         self.btn_step_back.clicked.connect(lambda: self.step_requested.emit(-1))
-        
-        self.btn_play = self._icon_btn(QStyle.StandardPixmap.SP_MediaPlay, "Play/Pause")
+
+        self.btn_play = self._icon_btn("play", "Play/Pause")
         self.btn_play.clicked.connect(self.play_toggled.emit)
-        
-        self.btn_step_fwd = self._icon_btn(QStyle.StandardPixmap.SP_MediaSeekForward, "Step Forward")
+
+        self.btn_step_fwd = self._icon_btn("fwd", "Step Forward")
         self.btn_step_fwd.clicked.connect(lambda: self.step_requested.emit(1))
         
         btns.addWidget(self.btn_step_back)
@@ -282,9 +310,10 @@ class MediaControls(QWidget):
             self.spin_speed, self.spin_goto, self.btn_goto
         ]
 
-    def _icon_btn(self, icon, tip):
+    def _icon_btn(self, kind, tip):
         b = QPushButton()
-        b.setIcon(self.style().standardIcon(icon))
+        b.setIcon(_make_media_icon(kind))
+        b.setIconSize(QSize(18, 18))
         b.setToolTip(tip)
         return b
 
@@ -297,8 +326,7 @@ class MediaControls(QWidget):
         self.setVisible(enabled)
 
     def set_playing_state(self, is_playing: bool):
-        icon = QStyle.StandardPixmap.SP_MediaPause if is_playing else QStyle.StandardPixmap.SP_MediaPlay
-        self.btn_play.setIcon(self.style().standardIcon(icon))
+        self.btn_play.setIcon(_make_media_icon("pause" if is_playing else "play"))
 
     def update_time(self, current_ms: int, duration_ms: int):
         self.lbl_time.setText(f"{self._fmt(current_ms)} / {self._fmt(duration_ms)}")

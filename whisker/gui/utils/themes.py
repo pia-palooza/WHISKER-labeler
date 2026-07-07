@@ -17,9 +17,10 @@ THEMES = {
         "bg_main": "#F0F4F8", "bg_dark": "#D6E0E8", "bg_panel": "#FFFFFF", "bg_header": "#BCCCDC",
         "accent": "#2C3E50", "text_main": "#2C3E50", "text_tab": "#748899", "border": "#98AAB9"
     },
+    # Money Mode theme: gold backgrounds + gold accents, dark text for readability.
     "Harvest Gold": {
-        "bg_main": "#FFFDF0", "bg_dark": "#F2E3A1", "bg_panel": "#FFFFFF", "bg_header": "#D4AF37",
-        "accent": "#4A3C00", "text_main": "#4A3C00", "text_tab": "#B8860B", "border": "#B8860B"
+        "bg_main": "#FFCC33", "bg_dark": "#E6B800", "bg_panel": "#FFDB4D", "bg_header": "#D4AF37",
+        "accent": "#B8860B", "text_main": "#3A2E00", "text_tab": "#5C4A00", "border": "#C9A227"
     },
     
     # --- Dark Themes ---
@@ -146,7 +147,7 @@ STYLESHEET_TEMPLATE = """
         font-family: 'Segoe UI'; font-size: 9pt;
     }}
     QTabBar::tab:selected {{ background-color: {bg_panel}; color: {accent}; border-top: 2px solid {accent}; padding-bottom: 1px; }}
-    QTabBar::tab:hover:!selected {{ color: #ffffff; background-color: {bg_header}; }}
+    QTabBar::tab:hover:!selected {{ color: #000000; background-color: {bg_header}; }}
     QTabBar::close-button {{ subcontrol-position: right; margin-left: 4px; }}
 
     #PanelHeader {{ background-color: {bg_header}; border: 1px solid {border}; border-bottom: 1px solid {accent}; border-top-left-radius: 4px; border-top-right-radius: 4px; }}
@@ -157,8 +158,8 @@ STYLESHEET_TEMPLATE = """
     #ToggleButton:hover {{ background-color: {accent}; color: {bg_main}; }}
     
     #MenuButton {{ background-color: {bg_main}; color: {text_main}; border: 1px solid {border}; border-radius: 3px; padding: 5px 8px; text-align: left; font-size: 9pt; }}
-    #MenuButton:hover {{ background-color: {border}; color: #ffffff; border-left: 5px solid {accent}; }}
-    #MenuButton:checked {{ background-color: {border}; color: #ffffff; border-left: 5px solid {accent}; }}
+    #MenuButton:hover {{ background-color: {border}; color: #000000; border-left: 5px solid {accent}; }}
+    #MenuButton:checked {{ background-color: {border}; color: #000000; border-left: 5px solid {accent}; }}
 
     #MenuButton[hoverTheme="cyan"]:hover, #MenuButton[hoverTheme="cyan"]:checked {{ border-left: 5px solid #00ffff; }}
     #MenuButton[hoverTheme="magenta"]:hover, #MenuButton[hoverTheme="magenta"]:checked {{ border-left: 5px solid #ff00ff; }}
@@ -191,10 +192,17 @@ STYLESHEET_TEMPLATE = """
         outline: 0;
     }}
     QTreeView::item {{ padding: 4px 2px; }}
-    QTreeView::item:hover {{ background-color: {border}; color: #ffffff; }}
+    QTreeView::item:hover {{ background-color: {border}; color: #000000; }}
     QTreeView::item:selected {{ background-color: {bg_header}; color: {accent}; }}
     QTreeView::item:selected:active {{ background-color: {bg_header}; color: {accent}; }}
     QTreeView::item:selected:!active {{ background-color: {bg_header}; color: {accent}; }}
+
+    /* Sliders (e.g. the video seek bar) -- keep them clearly visible on every theme. */
+    QSlider::groove:horizontal {{ height: 6px; background: {border}; border-radius: 3px; }}
+    QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 3px; }}
+    QSlider::add-page:horizontal {{ background: {bg_dark}; border-radius: 3px; }}
+    QSlider::handle:horizontal {{ background: {accent}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; border: 1px solid {bg_panel}; }}
+    QSlider::handle:horizontal:hover {{ background: {bg_header}; }}
 
     QLabel {{ color: {text_main}; font-family: 'Segoe UI', monospace; font-size: 9pt; }}
 

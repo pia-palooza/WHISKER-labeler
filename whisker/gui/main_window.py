@@ -587,6 +587,26 @@ class MainWindow(QMainWindow):
     def _on_labels_saved(self, dataset_name: str, media_path: str):
         MessageBus.get().publish("request/workspace/labels/refresh")
 
+        # Confirmation feedback that the save succeeded.
+        self.statusBar().showMessage(f"✓ Saved labels for “{dataset_name}”", 4000)
+
+        # Money Mode celebration: rain gold coins across the window for 5s.
+        if self.settings.value("enable_money_mode", False, type=bool):
+            self._play_coin_confetti()
+
+    def _play_coin_confetti(self):
+        """Show a 5-second falling-coins overlay (Money Mode only)."""
+        from whisker.gui.widgets.coin_confetti import CoinConfettiOverlay
+
+        if not hasattr(self, "_confetti_overlays"):
+            self._confetti_overlays = []
+        overlay = CoinConfettiOverlay(self, duration_ms=5000)
+        self._confetti_overlays.append(overlay)
+        overlay.destroyed.connect(
+            lambda: self._confetti_overlays.remove(overlay)
+            if overlay in self._confetti_overlays else None
+        )
+
     def _on_register_view(self, topic: str, request: Any):
         view_name = request.view_name
         widget = request.widget
