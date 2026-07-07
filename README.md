@@ -41,6 +41,8 @@ project. Your source media is only ever read, never modified.
 ## Requirements
 
 - **Miniconda or Anaconda** — <https://docs.conda.io/en/latest/miniconda.html>
+- **Git** — to clone the repository (or download it as a ZIP from GitHub via
+  **Code → Download ZIP** and unzip it instead)
 - **Python 3.11** (installed automatically by the conda environment below)
 - Windows, macOS, or Linux
 
@@ -68,14 +70,22 @@ from any folder.
 
 ## Launching
 
-**Windows:** double-click **`launch.bat`** in the `WHISKER-labeler` folder.
-
-**Any platform:**
+**Any platform (recommended)** — from an Anaconda Prompt / terminal:
 
 ```bash
 conda activate whisker-labeler
+cd path/to/WHISKER-labeler
 python -m whisker.main
 ```
+
+Running it from the `WHISKER-labeler` folder makes that folder the default
+workspace on first launch (you can always switch later).
+
+**Windows shortcut:** double-click **`launch.bat`** in the `WHISKER-labeler`
+folder — it runs the same command for you. Note that `launch.bat` hard-codes the
+path to the environment's `python.exe`; if your conda isn't in the default
+Miniconda location, edit the `ENV_PY` line near the top of `launch.bat` first (or
+just use the Anaconda Prompt method above).
 
 On first launch the app opens a WHISKER **workspace** — by default the current
 folder, or the last workspace you used. Use **File → Open Workspace…** to point it
