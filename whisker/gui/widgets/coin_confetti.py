@@ -1,14 +1,15 @@
-"""A mouse-transparent overlay that rains gold coins for a few seconds.
+"""A click-through, always-on-top overlay that rains gold coins for a few seconds.
 
-Used to celebrate a save while **Money Mode** is enabled. It parents itself to
-the given widget (typically the main window), covers its whole area, lets all
-mouse events pass through, animates falling coins, then deletes itself.
+Used to celebrate a save while **Money Mode** is enabled. It is a *top-level*
+translucent window (so it reliably paints over everything, including the video
+surface), covers the whole screen the app is on, passes all input straight
+through, animates falling coins, then deletes itself.
 """
 import math
 import random
 
 from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
+from PyQt6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import QWidget
 
 _COIN_SHADES = ["#FFD700", "#F5C518", "#E6B800", "#FFDF6B", "#D4AF37"]
@@ -31,17 +32,32 @@ class _Coin:
 
 
 class CoinConfettiOverlay(QWidget):
-    """Rains gold coins over `parent` for `duration_ms`, then removes itself."""
+    """Rains gold coins across the whole screen for `duration_ms`, then removes itself."""
 
-    def __init__(self, parent: QWidget, duration_ms: int = 5000, count: int = 90):
+    def __init__(self, parent: QWidget = None, duration_ms: int = 5000, count: int = 130):
+        # Top-level (no layout parent) so translucency + stacking are reliable,
+        # but keep an ownership link to `parent` so it dies with the app.
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowTransparentForInput
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self.setGeometry(parent.rect())
+        # Cover the whole screen the app is currently on.
+        screen = parent.screen() if parent is not None else None
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            self.setGeometry(screen.geometry())
+
         self._coins = [_Coin(self.width(), self.height()) for _ in range(count)]
 
         self._timer = QTimer(self)

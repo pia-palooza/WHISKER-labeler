@@ -595,17 +595,23 @@ class MainWindow(QMainWindow):
             self._play_coin_confetti()
 
     def _play_coin_confetti(self):
-        """Show a 5-second falling-coins overlay (Money Mode only)."""
-        from whisker.gui.widgets.coin_confetti import CoinConfettiOverlay
+        """Show a 5-second falling-coins overlay (Money Mode only).
 
-        if not hasattr(self, "_confetti_overlays"):
-            self._confetti_overlays = []
-        overlay = CoinConfettiOverlay(self, duration_ms=5000)
-        self._confetti_overlays.append(overlay)
-        overlay.destroyed.connect(
-            lambda: self._confetti_overlays.remove(overlay)
-            if overlay in self._confetti_overlays else None
-        )
+        Wrapped defensively so a confetti hiccup can never interfere with saving.
+        """
+        try:
+            from whisker.gui.widgets.coin_confetti import CoinConfettiOverlay
+
+            if not hasattr(self, "_confetti_overlays"):
+                self._confetti_overlays = []
+            overlay = CoinConfettiOverlay(self, duration_ms=5000)
+            self._confetti_overlays.append(overlay)
+            overlay.destroyed.connect(
+                lambda: self._confetti_overlays.remove(overlay)
+                if overlay in self._confetti_overlays else None
+            )
+        except Exception:
+            logging.exception("Coin confetti overlay failed to launch")
 
     def _on_register_view(self, topic: str, request: Any):
         view_name = request.view_name
