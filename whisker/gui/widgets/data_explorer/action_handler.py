@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem,
     QTreeWidget,
     QFileDialog,
+    QProgressDialog,
 )
 
 from whisker.core.workspace import Workspace, DatasetType, Project
@@ -24,7 +25,10 @@ from whisker.gui.dialogs import (
     CreateDatasetTabbedDialog,
     WarnIfExistsDialog,
     ImportLabelsDialog,
+    ExportAnnotationsDialog,
+    ImportBundleDialog,
 )
+from whisker.core.workers.bundle_workers import ExportBundleJob, ImportBundleJob
 from whisker.gui.signals import MessageBus
 from whisker.gui.worker_wrapper import Worker
 from whisker.gui.widgets.export_clip_dialog import ExportClipDialog
@@ -312,7 +316,158 @@ class ActionHandler(QObject):
         worker.signals.error.connect(_on_error)
         self.thread_pool.start(worker)
 
+    # --- Annotation Bundle Export / Import ---
 
+    def _export_annotations(self, dataset_name: str):
+        """Export an image/frame dataset's annotations (project, manifest, label
+        HDF5s and the frame images) into a tidy, self-describing bundle."""
+        if not self._workspace:
+            return
+
+        default_project = self._active_project.name if self._active_project else None
+        dialog = ExportAnnotationsDialog(
+            self._workspace, dataset_name, default_project, self.parent_widget
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        plan = dialog.plan
+        bundle_dir = dialog.bundle_dir
+        if plan is None or bundle_dir is None:
+            return
+
+        overwrite = False
+        if bundle_dir.exists():
+            reply = QMessageBox.question(
+                self.parent_widget,
+                "Overwrite Existing Folder?",
+                f"'{bundle_dir}' already exists.\n\nReplace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            overwrite = True
+
+        def _on_finished(result):
+            msg = f"Exported '{dataset_name}' to:\n{result['bundle_dir']}\n\n"
+            if result.get("media_included"):
+                msg += (
+                    f"{result['media_kind'].capitalize()} copied: "
+                    f"{result['num_media_copied']}/{result['num_media']}"
+                )
+                if result.get("num_missing"):
+                    msg += f"\nMissing/skipped: {result['num_missing']}"
+            else:
+                msg += (
+                    f"{result['media_kind'].capitalize()} referenced "
+                    f"(not copied): {result['num_media']}"
+                )
+            QMessageBox.information(self.parent_widget, "Export Complete", msg)
+
+        self._run_bundle_job(
+            ExportBundleJob(
+                plan, bundle_dir, overwrite=overwrite, include_media=dialog.include_media
+            ),
+            "Exporting Annotations",
+            _on_finished,
+            "Export Failed",
+        )
+
+    def show_import_bundle_dialog(self):
+        """Import an annotation bundle produced by 'Export Annotations...'."""
+        if not self._workspace:
+            QMessageBox.warning(
+                self.parent_widget,
+                "Workspace Not Found",
+                "Please open a workspace before importing a bundle.",
+            )
+            return
+
+        dialog = ImportBundleDialog(self._workspace, self.parent_widget)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        bundle_dir = dialog.bundle_dir
+        if bundle_dir is None:
+            return
+
+        def _on_finished(result):
+            # Rescan the workspace on the GUI thread now that files are written.
+            self._workspace.scan_projects()
+            self._workspace.scan_datasets()
+            self._workspace.scan_labels()
+            MessageBus.get().publish("request/workspace/projects/refresh")
+            MessageBus.get().publish("request/workspace/datasets/refresh")
+            MessageBus.get().publish("request/workspace/labels/refresh")
+
+            msg = (
+                f"Imported dataset '{result['dataset_name']}' "
+                f"(project '{result['project_name']}').\n\n"
+            )
+            if result.get("media_included"):
+                msg += (
+                    f"{result['media_kind'].capitalize()} copied: "
+                    f"{result['num_media_copied']}/{result['num_media']}"
+                )
+            else:
+                msg += f"{result['media_kind'].capitalize()} referenced (not copied)."
+            extras = []
+            if result.get("pose_imported"):
+                extras.append("pose labels")
+            if result.get("behavior_imported"):
+                extras.append("behavior labels")
+            if extras:
+                msg += "\nImported: " + ", ".join(extras)
+            if result.get("num_missing"):
+                msg += f"\nMedia not found: {result['num_missing']}"
+            QMessageBox.information(self.parent_widget, "Import Complete", msg)
+
+        self._run_bundle_job(
+            ImportBundleJob(
+                self._workspace,
+                bundle_dir,
+                overwrite=dialog.overwrite,
+                media_source_dir=dialog.media_source_dir,
+            ),
+            "Importing Annotation Bundle",
+            _on_finished,
+            "Import Failed",
+        )
+
+    def _run_bundle_job(self, job, title: str, on_finished, error_title: str):
+        """Run a bundle export/import job on the thread pool with a modal
+        progress dialog. All overwrite decisions must already be resolved."""
+        progress = QProgressDialog(title + "...", "Cancel", 0, 100, self.parent_widget)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(True)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        worker = Worker(job)
+
+        def _on_progress(message, percent):
+            if not progress.wasCanceled():
+                progress.setLabelText(message)
+                progress.setValue(max(0, min(100, percent)))
+
+        def _on_job_finished(result):
+            progress.reset()
+            on_finished(result)
+
+        def _on_job_error(err):
+            progress.reset()
+            if progress.wasCanceled() or "cancel" in str(err).lower():
+                return
+            QMessageBox.critical(self.parent_widget, error_title, f"Error:\n{err}")
+
+        worker.signals.progress.connect(_on_progress)
+        worker.signals.finished.connect(_on_job_finished)
+        worker.signals.error.connect(_on_job_error)
+        progress.canceled.connect(worker.cancel)
+
+        self.thread_pool.start(worker)
 
     # --- Context Menu Logic ---
 
@@ -353,6 +508,17 @@ class ActionHandler(QObject):
                     edit_arenas_action = menu.addAction("Edit Arenas...")
                     edit_arenas_action.triggered.connect(
                         lambda: self._edit_arenas(dataset_name)
+                    )
+
+                # Export Annotations (image/frame/video datasets) -> bundle
+                if dataset and dataset.type in (
+                    DatasetType.IMAGE_COLLECTION,
+                    DatasetType.FRAME_SUBSET,
+                    DatasetType.VIDEO_COLLECTION,
+                ):
+                    export_annotations_action = menu.addAction("Export Annotations...")
+                    export_annotations_action.triggered.connect(
+                        lambda: self._export_annotations(dataset_name)
                     )
 
                 # Behavior Export Action (Legacy/Labels)
