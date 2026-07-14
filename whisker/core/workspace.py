@@ -108,6 +108,10 @@ class Workspace:
         return self.datasets.get_dataset(dataset_name)
     def create_dataset(self, dataset_name: str, dataset_type: DatasetType, dataset_data_dir: Path, warn_if_exists: Optional[Callable[[str], bool]] = None,):
         return self.datasets.create_dataset(dataset_name, dataset_type, dataset_data_dir, warn_if_exists)
+    def create_multi_arena_dataset(self, dataset_name: str, dataset_data_dir: Path, box_width: int, box_height: int, placements: dict, warn_if_exists: Optional[Callable[[str], bool]] = None,):
+        return self.datasets.create_multi_arena_dataset(dataset_name, dataset_data_dir, box_width, box_height, placements, warn_if_exists)
+    def update_multi_arena_dataset(self, dataset_name: str, box_width: int, box_height: int, placements: dict):
+        return self.datasets.update_multi_arena_dataset(dataset_name, box_width, box_height, placements)
     def add_dataset(self, dataset_name: str, dataset: Dataset, warn_if_exists: Optional[Callable[[str], bool]] = None, overwrite_existing: bool = True,):
         return self.datasets.add_dataset(dataset_name, dataset, warn_if_exists, overwrite_existing)
     def save_dataset(self, dataset_name: str) -> None:

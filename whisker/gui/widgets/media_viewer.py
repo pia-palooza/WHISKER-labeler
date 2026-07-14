@@ -6,7 +6,7 @@ from typing import Optional, List, Dict
 import cv2
 import numpy as np
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QRectF, QTimer, QPointF, QSize
-from PyQt6.QtGui import QPixmap, QResizeEvent, QPainter, QColor, QPen, QBrush, QImage, QFont, QIcon, QPolygonF
+from PyQt6.QtGui import QPixmap, QResizeEvent, QPainter, QColor, QPen, QBrush, QImage, QFont, QIcon, QPolygonF, QPainterPath
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import (
@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QFormLayout, QDoubleSpinBox, QStyleOptionSlider, QGraphicsView,
     QGraphicsScene, QGraphicsPixmapItem, QGraphicsProxyWidget, QStackedWidget,
     QGraphicsItemGroup, QGraphicsLineItem, QGraphicsEllipseItem,
-    QGraphicsSimpleTextItem, QGraphicsRectItem
+    QGraphicsSimpleTextItem, QGraphicsRectItem, QCheckBox
 )
 
 from whisker.gui.constants import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS
@@ -438,12 +438,50 @@ class MediaViewerWidget(QWidget):
         self._side_by_side = False
         self._cap: Optional[cv2.VideoCapture] = None  # Persistent capture for side-by-side
 
+        # Arena clipping-mask overlay (multi-arena pseudo-video display). When an
+        # arena box is set, everything outside it is covered by an opaque black
+        # overlay so the user sees only that arena while the full video streams
+        # underneath. Nothing about the decoded frames is modified.
+        self._arena_box: Optional[tuple] = None
+        self._arena_mask_item = None
+        # Read-only arena outlines (so the user can see where arenas are). List
+        # of (x, y, w, h); active_index (if any) is highlighted.
+        self._arena_boxes_outlines: list = []
+        self._arena_active_index: Optional[int] = None
+        self._arena_box_items: list = []
+
+        # When enabled (via the "Zoom to ROI" checkbox, which only appears while
+        # an arena region is set), the view fits to the arena box instead of the
+        # full frame. The decoded frames/scene are unchanged; only the view
+        # transform is affected. The preference persists across media loads.
+        self._zoom_to_roi = False
+        # Force-disable the zoom control (e.g. "All Arenas" views, where there is
+        # no single ROI to zoom into). Keeps the checkbox visible but greyed out.
+        self._zoom_roi_disabled = False
+
         self._setup_ui()
         self.set_media(None)
         self._connect_signals()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
+
+        # ROI zoom toolbar (hidden until an arena region is set). Sits above the
+        # view so it's available for both video and still-image media.
+        self.roi_bar = QWidget()
+        roi_layout = QHBoxLayout(self.roi_bar)
+        roi_layout.setContentsMargins(5, 2, 5, 2)
+        roi_layout.addStretch()
+        self.chk_zoom_roi = QCheckBox("Zoom to ROI")
+        self.chk_zoom_roi.setToolTip(
+            "Zoom the view into the selected arena region"
+        )
+        self.chk_zoom_roi.setChecked(self._zoom_to_roi)
+        self.chk_zoom_roi.toggled.connect(self._on_zoom_roi_toggled)
+        roi_layout.addWidget(self.chk_zoom_roi)
+        self.roi_bar.setVisible(False)
+        layout.addWidget(self.roi_bar)
+
         self.view_stack = QStackedWidget()
         layout.addWidget(self.view_stack)
 
@@ -524,6 +562,14 @@ class MediaViewerWidget(QWidget):
             self._cap = None
 
         self.painter.clear()
+        # Clear any arena mask/outlines from the previous media; the caller
+        # re-applies them for the new media if it is multi-arena.
+        self._arena_box = None
+        self._remove_arena_mask_item()
+        self._arena_boxes_outlines = []
+        self._arena_active_index = None
+        self._remove_arena_box_items()
+        self._update_roi_zoom_availability()
         self.video_item.setVisible(False)
         self.image_item.setVisible(False)
         self.image_item_right.setVisible(False)
@@ -549,6 +595,151 @@ class MediaViewerWidget(QWidget):
 
         if self._side_by_side:
             self.set_side_by_side(True, force=True)
+
+    def set_arena_mask(self, box):
+        """
+        Black out everything outside the arena region(s). ``box`` is either a
+        single ``(x, y, w, h)`` (full-frame pixels) or a list of such tuples (to
+        reveal several arenas at once, e.g. an "All Arenas" view); ``None`` clears
+        the mask. Implemented as an opaque overlay on top of the streaming video,
+        so the decoded frames are never altered and the frame size is unchanged.
+        """
+        if box is None:
+            self._arena_box = None
+        elif len(box) > 0 and isinstance(box[0], (tuple, list)):
+            # A list of boxes.
+            self._arena_box = [tuple(b) for b in box]
+        else:
+            # A single box.
+            self._arena_box = tuple(box)
+        self._rebuild_arena_mask()
+        self._update_roi_zoom_availability()
+        self._fit_view()
+
+    def clear_arena_mask(self):
+        self.set_arena_mask(None)
+
+    def _remove_arena_mask_item(self):
+        if self._arena_mask_item is not None:
+            try:
+                self.scene.removeItem(self._arena_mask_item)
+            except Exception:
+                pass
+            self._arena_mask_item = None
+
+    def _rebuild_arena_mask(self):
+        self._remove_arena_mask_item()
+        if self._arena_box is None:
+            return
+        rect = self.scene.sceneRect()
+        if rect is None or rect.isNull():
+            return
+        boxes = self._arena_box if isinstance(self._arena_box, list) else [self._arena_box]
+        outer = QPainterPath()
+        outer.addRect(rect)
+        inner = QPainterPath()
+        for (x, y, w, h) in boxes:
+            inner.addRect(QRectF(float(x), float(y), float(w), float(h)))
+        outside = outer.subtracted(inner)
+        self._arena_mask_item = self.scene.addPath(
+            outside, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0))
+        )
+        # Above the video/image items (z=0) but below the info overlay (z=1).
+        self._arena_mask_item.setZValue(0.5)
+
+    def set_arena_boxes(self, boxes, active_index: Optional[int] = None):
+        """
+        Draw arena box **outlines** over the video (read-only), so the user can
+        see where the arenas are. ``boxes`` is a list of ``(x, y, w, h)`` in
+        full-frame pixels; ``active_index`` (if given) is highlighted and the
+        others dimmed. Pass ``None``/``[]`` to clear. This is independent of
+        ``set_arena_mask`` (which blacks out everything outside one box).
+        """
+        self._arena_boxes_outlines = list(boxes) if boxes else []
+        self._arena_active_index = active_index
+        self._rebuild_arena_boxes()
+        self._update_roi_zoom_availability()
+        self._fit_view()
+
+    def clear_arena_boxes(self):
+        self.set_arena_boxes(None)
+
+    def _remove_arena_box_items(self):
+        for item in self._arena_box_items:
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._arena_box_items = []
+
+    def _rebuild_arena_boxes(self):
+        self._remove_arena_box_items()
+        if not self._arena_boxes_outlines:
+            return
+        rect = self.scene.sceneRect()
+        if rect is None or rect.isNull():
+            return
+        for i, (x, y, w, h) in enumerate(self._arena_boxes_outlines):
+            is_active = self._arena_active_index is None or i == self._arena_active_index
+            color = QColor("#00E5A0") if is_active else QColor("#7f8c8d")
+            pen = QPen(color, 2)
+            pen.setCosmetic(True)  # constant on-screen width regardless of zoom
+            box_item = self.scene.addRect(QRectF(float(x), float(y), float(w), float(h)), pen)
+            box_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            box_item.setZValue(0.7)  # above the mask (0.5), below the info overlay (1)
+            self._arena_box_items.append(box_item)
+
+            label = self.scene.addSimpleText(str(i + 1))
+            font = QFont()
+            font.setPointSize(max(8, int(min(w, h) * 0.08)))
+            label.setFont(font)
+            label.setBrush(QBrush(color))
+            label.setPos(float(x) + 3, float(y) + 2)
+            label.setZValue(0.7)
+            self._arena_box_items.append(label)
+
+    # --- ROI zoom ---
+
+    def _roi_zoom_rect(self) -> Optional[QRectF]:
+        """The arena region to zoom into, or ``None`` if no ROI is set."""
+        box = None
+        if isinstance(self._arena_box, tuple):
+            box = self._arena_box
+        elif self._arena_boxes_outlines and self._arena_active_index is not None:
+            if 0 <= self._arena_active_index < len(self._arena_boxes_outlines):
+                box = self._arena_boxes_outlines[self._arena_active_index]
+        if box is None:
+            return None
+        x, y, w, h = box
+        return QRectF(float(x), float(y), float(w), float(h))
+
+    def _update_roi_zoom_availability(self):
+        """Show the zoom checkbox only when there is an ROI to zoom into. When the
+        control is force-disabled (e.g. an "All Arenas" view), keep it visible but
+        greyed out as long as there is any arena region on screen."""
+        if self._zoom_roi_disabled:
+            has_any = self._arena_box is not None or bool(self._arena_boxes_outlines)
+            self.roi_bar.setVisible(has_any)
+            self.chk_zoom_roi.setEnabled(False)
+            return
+        self.chk_zoom_roi.setEnabled(True)
+        self.roi_bar.setVisible(self._roi_zoom_rect() is not None)
+
+    def set_zoom_to_roi_disabled(self, disabled: bool):
+        """Force-disable (or re-enable) the "Zoom to ROI" control. While disabled
+        the view is kept at the full frame."""
+        self._zoom_roi_disabled = disabled
+        if disabled and self._zoom_to_roi:
+            self._zoom_to_roi = False
+            self.chk_zoom_roi.blockSignals(True)
+            self.chk_zoom_roi.setChecked(False)
+            self.chk_zoom_roi.blockSignals(False)
+            self._fit_view()
+        self._update_roi_zoom_availability()
+
+    def _on_zoom_roi_toggled(self, checked: bool):
+        self._zoom_to_roi = checked
+        self._fit_view()
 
     def set_overlay_names(self, left: str, right: str):
         self.view.set_overlay_names(left, right)
@@ -779,9 +970,18 @@ class MediaViewerWidget(QWidget):
         # 2. Fit the view to that specific item
         if target_item and not target_item.boundingRect().isEmpty():
             rect = target_item.boundingRect()
-            self.view.fitInView(target_item, Qt.AspectRatioMode.KeepAspectRatio)
+            # Keep the scene bounds at the full frame so the arena mask/outlines
+            # (which are computed against the full scene) stay correct.
             self.scene.setSceneRect(rect)
             self.overlay_proxy.setGeometry(rect)
+
+            # When zooming to the ROI, fit the view to the arena box instead of
+            # the full frame. Falls back to the full frame if no ROI is set.
+            roi = self._roi_zoom_rect() if self._zoom_to_roi else None
+            if roi is not None and not roi.isEmpty():
+                self.view.fitInView(roi, Qt.AspectRatioMode.KeepAspectRatio)
+            else:
+                self.view.fitInView(target_item, Qt.AspectRatioMode.KeepAspectRatio)
 
     # --- Converters & Accessors ---
 

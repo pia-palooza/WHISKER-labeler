@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from whisker.core.workspace import Workspace, DatasetType, Project
 from whisker.gui.dialogs import (
     CreateDatasetDialog,
+    CreateDatasetTabbedDialog,
     WarnIfExistsDialog,
     ImportLabelsDialog,
 )
@@ -85,19 +86,175 @@ class ActionHandler(QObject):
         if not self._workspace:
             return
 
-        dialog = CreateDatasetDialog(self._workspace)
+        dialog = CreateDatasetTabbedDialog(self._workspace)
         dialog.exec()
-        if dialog.result() == QDialog.DialogCode.Accepted:
-            result = dialog.get_dataset_info()
-            if result:
-                name, inferred_type, folder_path = result
-                self._workspace.create_dataset(
-                    name,
-                    inferred_type,
-                    folder_path,
-                    warn_if_exists=lambda msg: WarnIfExistsDialog.run(msg, parent=self.parent_widget),
+        if dialog.result() != QDialog.DialogCode.Accepted:
+            return
+
+        result = dialog.get_result()
+        if not result:
+            return
+
+        mode, info = result
+        warn = lambda msg: WarnIfExistsDialog.run(msg, parent=self.parent_widget)
+
+        if mode == "single":
+            name, inferred_type, folder_path = info
+            self._workspace.create_dataset(name, inferred_type, folder_path, warn_if_exists=warn)
+            MessageBus.get().publish("request/workspace/datasets/refresh")
+        elif mode == "multi":
+            self._workspace.create_multi_arena_dataset(
+                dataset_name=info["name"],
+                dataset_data_dir=info["folder_path"],
+                box_width=info["box_width"],
+                box_height=info["box_height"],
+                placements=info["placements"],
+                warn_if_exists=warn,
+            )
+            MessageBus.get().publish("request/workspace/datasets/refresh")
+
+    def _edit_arenas(self, dataset_name: str):
+        """Open the arena placement editor pre-loaded with an existing
+        multi-arena dataset, then persist the revised config after warning the
+        user about any arenas whose existing artifacts the edit would invalidate."""
+        if not self._workspace:
+            return
+        dataset = self._workspace.datasets.get(dataset_name)
+        if not dataset or not getattr(dataset, "is_multi_arena", False):
+            return
+
+        from PyQt6.QtWidgets import QVBoxLayout
+        from whisker.gui.dialogs.multi_arena import MultiArenaDatasetPanel
+
+        dialog = QDialog(self.parent_widget)
+        dialog.setWindowTitle(f"Edit Arenas — {dataset_name}")
+        dialog.resize(1000, 720)
+        layout = QVBoxLayout(dialog)
+        panel = MultiArenaDatasetPanel()
+        layout.addWidget(panel)
+        panel.load_existing(
+            name=dataset_name,
+            folder_path=dataset.base_data_path,
+            box_width=dataset.multi_arena.box_width,
+            box_height=dataset.multi_arena.box_height,
+            placements=dataset.multi_arena.placements,
+        )
+        panel.create_requested.connect(dialog.accept)
+        panel.cancel_requested.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        info = panel.get_multi_arena_info()
+        if info is None:
+            return
+
+        self._apply_arena_edit(dataset, info)
+
+    def _apply_arena_edit(self, dataset, info: dict):
+        """Validate the edit's impact against existing per-arena artifacts,
+        confirm with the user, then persist."""
+        from whisker.core.study.dataset import analyze_arena_edit
+
+        impact = analyze_arena_edit(
+            dataset.multi_arena, info["box_width"], info["box_height"], info["placements"]
+        )
+
+        if impact.has_risky_changes:
+            affected = self._arena_stems_with_artifacts(
+                dataset.name, impact.invalidated_stems
+            )
+            if affected:
+                lines = []
+                for stem in sorted(affected):
+                    lines.append(f"  • {stem} — {', '.join(affected[stem])}")
+                detail = "\n".join(lines)
+                extra = (
+                    "\n\nChanging the shared box size moves every arena, so all "
+                    "arenas are affected."
+                    if impact.box_size_changed else ""
                 )
-                MessageBus.get().publish("request/workspace/datasets/refresh")
+                proceed = QMessageBox.warning(
+                    self.parent_widget,
+                    "Existing arena data will be invalidated",
+                    "This edit changes the box under arenas that already have "
+                    "labels or predictions. Because arenas are identified by "
+                    "position, their existing data no longer matches the new "
+                    "box and pose predictions must be re-run:\n\n"
+                    f"{detail}{extra}\n\n"
+                    "The old artifacts are left on disk but will be mismatched. "
+                    "Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if proceed != QMessageBox.StandardButton.Yes:
+                    return
+
+        try:
+            self._workspace.update_multi_arena_dataset(
+                dataset_name=dataset.name,
+                box_width=info["box_width"],
+                box_height=info["box_height"],
+                placements=info["placements"],
+            )
+        except Exception as e:
+            logging.error(f"Failed to update multi-arena dataset '{dataset.name}': {e}", exc_info=True)
+            QMessageBox.critical(self.parent_widget, "Edit Failed", f"Could not save arena edits: {e}")
+            return
+
+        MessageBus.get().publish("request/workspace/datasets/refresh")
+
+    def _arena_stems_with_artifacts(self, dataset_name: str, stems) -> dict:
+        """For the given arena stems, return {stem: [artifact types present]},
+        checking behavior labels, pose predictions, and behavior predictions.
+        Stems with no existing artifacts are omitted."""
+        stems = set(stems)
+        found: dict[str, list[str]] = {}
+        if not stems:
+            return found
+
+        def _add(stem: str, kind: str):
+            found.setdefault(stem, [])
+            if kind not in found[stem]:
+                found[stem].append(kind)
+
+        # 1. Behavior labels (single labels.h5 keyed by video_key == arena stem)
+        try:
+            labeled = self._workspace.get_behavior_labeled_video_keys(dataset_name)
+            for stem in stems & set(labeled):
+                _add(stem, "behavior labels")
+        except Exception as e:
+            logging.warning(f"Could not check behavior labels for arena edit: {e}")
+
+        # 2. Pose predictions (per-run/dataset/stem directories on disk)
+        try:
+            pose_base = self._workspace.pose_predictions.base_dir
+            if pose_base.is_dir():
+                for run_dir in pose_base.iterdir():
+                    ds_dir = run_dir / dataset_name
+                    if not ds_dir.is_dir():
+                        continue
+                    for stem in stems:
+                        if (ds_dir / stem / "predictions.h5").exists():
+                            _add(stem, "pose predictions")
+        except Exception as e:
+            logging.warning(f"Could not check pose predictions for arena edit: {e}")
+
+        # 3. Behavior predictions (per-run/dataset/stem directories on disk)
+        try:
+            bc_base = self._workspace.behavior_predictions.base_dir
+            if bc_base.is_dir():
+                for run_dir in bc_base.iterdir():
+                    ds_dir = run_dir / dataset_name
+                    if not ds_dir.is_dir():
+                        continue
+                    for stem in stems:
+                        if (ds_dir / stem / "predictions.h5").exists():
+                            _add(stem, "behavior predictions")
+        except Exception as e:
+            logging.warning(f"Could not check behavior predictions for arena edit: {e}")
+
+        return found
 
     def show_import_pose_labels_dialog(self, button_reference=None):
         """
@@ -190,6 +347,13 @@ class ActionHandler(QObject):
                 refresh_action.triggered.connect(
                     lambda: self._execute_dataset_refresh(dataset_name)
                 )
+
+                # Edit Arenas (multi-arena datasets only)
+                if dataset and getattr(dataset, "is_multi_arena", False):
+                    edit_arenas_action = menu.addAction("Edit Arenas...")
+                    edit_arenas_action.triggered.connect(
+                        lambda: self._edit_arenas(dataset_name)
+                    )
 
                 # Behavior Export Action (Legacy/Labels)
                 if dataset and dataset.type == DatasetType.VIDEO_COLLECTION:

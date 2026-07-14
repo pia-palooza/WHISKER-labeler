@@ -32,6 +32,11 @@ class FrameSamplingWidget(QWidget):
         self._current_subset_name: Optional[str] = None
         self._enable_edits: bool = True
 
+        # Multi-arena state: boxes for the current video and the selected arena
+        # index (None = "All arenas", i.e. show every ROI outline, no mask).
+        self._arena_boxes: list = []
+        self._arena_index: Optional[int] = None
+
         self._init_ui()
         self._connect_signals()
 
@@ -51,6 +56,22 @@ class FrameSamplingWidget(QWidget):
         top_bar.addWidget(QLabel("View Subset:"))
         self.subset_combo = QComboBox()
         top_bar.addWidget(self.subset_combo, 1)
+
+        # Arena selector (multi-arena datasets only). Choosing an arena masks the
+        # preview to that arena and saves frames masked, into a per-arena subdir.
+        self.arena_widget = QWidget()
+        arena_layout = QHBoxLayout(self.arena_widget)
+        arena_layout.setContentsMargins(8, 0, 0, 0)
+        arena_layout.addWidget(QLabel("Arena:"))
+        self.arena_combo = QComboBox()
+        self.arena_combo.setToolTip(
+            "Pick an arena to sample one animal at a time. Saved frames are "
+            "masked to the arena (single mouse) for pose labeling/training."
+        )
+        arena_layout.addWidget(self.arena_combo)
+        self.arena_widget.setVisible(False)
+        top_bar.addWidget(self.arena_widget)
+
         viewer_layout.addLayout(top_bar)
 
         self.media_viewer = MediaViewerWidget()
@@ -107,6 +128,7 @@ class FrameSamplingWidget(QWidget):
         self.remove_btn.clicked.connect(self._remove_selected_frame)
         self.save_btn.clicked.connect(self._save_frames)
         self.subset_combo.currentIndexChanged.connect(self._on_subset_changed)
+        self.arena_combo.currentIndexChanged.connect(self._on_arena_changed)
         self.table.cellClicked.connect(self._on_table_clicked)
 
         MessageBus.get().subscribe("workspace/datasets/refreshed", lambda t, p: self._refresh_subsets_list())
@@ -122,12 +144,59 @@ class FrameSamplingWidget(QWidget):
         self._video_path = Path(dataset.base_data_path) / video_rel_path
         self.media_viewer.set_media(self._video_path)
 
+        self._setup_arenas(dataset, video_rel_path)
+
         self._saved_frames.clear()
         self._pending_frames.clear()
         self._refresh_subsets_list()
 
         self.subset_combo.setCurrentIndex(0)
         self._update_ui()
+
+    def _setup_arenas(self, dataset, video_rel_path: str):
+        """Populate the arena selector for a multi-arena dataset and show all
+        arena ROIs on the video. Hidden for ordinary datasets."""
+        video_rel_norm = str(video_rel_path).replace("\\", "/")
+        boxes = (
+            dataset.multi_arena.boxes_for(video_rel_norm)
+            if getattr(dataset, "is_multi_arena", False) else []
+        )
+        self._arena_boxes = boxes
+        self._arena_index = None
+
+        self.arena_combo.blockSignals(True)
+        self.arena_combo.clear()
+        if boxes:
+            self.arena_combo.addItem("All arenas", None)
+            for k in range(len(boxes)):
+                self.arena_combo.addItem(f"Arena {k + 1}", k)
+        self.arena_combo.blockSignals(False)
+
+        self.arena_widget.setVisible(bool(boxes))
+        if boxes:
+            self.arena_combo.setCurrentIndex(0)  # "All arenas"
+            self._apply_arena_overlay()
+        else:
+            self.media_viewer.clear_arena_boxes()
+            self.media_viewer.clear_arena_mask()
+
+    def _apply_arena_overlay(self):
+        """Reflect the current arena selection on the video: all outlines for
+        'All arenas', or a black-out mask + highlighted outline for one arena."""
+        if not self._arena_boxes:
+            self.media_viewer.clear_arena_boxes()
+            self.media_viewer.clear_arena_mask()
+            return
+        if self._arena_index is None:
+            self.media_viewer.clear_arena_mask()
+            self.media_viewer.set_arena_boxes(self._arena_boxes, active_index=None)
+        else:
+            self.media_viewer.set_arena_mask(self._arena_boxes[self._arena_index])
+            self.media_viewer.set_arena_boxes(self._arena_boxes, active_index=self._arena_index)
+
+    def _on_arena_changed(self, _index: int):
+        self._arena_index = self.arena_combo.currentData()
+        self._apply_arena_overlay()
 
     def _refresh_subsets_list(self):
         """Finds all FRAME_SUBSET datasets that contain frames from this video."""
@@ -148,7 +217,7 @@ class FrameSamplingWidget(QWidget):
             if ds.type == DatasetType.FRAME_SUBSET:
                 # Check if this dataset contains files from our video
                 # Files in FRAME_SUBSET are usually "video_stem/frame_XXXX.png"
-                has_video = any(Path(f).parts[0] == video_stem for f in ds.files)
+                has_video = any(self._file_belongs_to_video(f, video_stem) for f in ds.files)
                 if has_video:
                     self.subset_combo.addItem(ds.name, ds.name)
 
@@ -159,6 +228,13 @@ class FrameSamplingWidget(QWidget):
 
         self.subset_combo.blockSignals(False)
         self._on_subset_changed()
+
+    @staticmethod
+    def _file_belongs_to_video(rel_file: str, video_stem: str) -> bool:
+        """A FRAME_SUBSET file belongs to this video if it lives under the
+        video's subdir or any of its per-arena subdirs ("{stem}_arena{k}")."""
+        p0 = Path(rel_file).parts[0]
+        return p0 == video_stem or p0.startswith(f"{video_stem}_arena")
 
     def _on_subset_changed(self):
         subset_name = self.subset_combo.currentData()
@@ -173,7 +249,7 @@ class FrameSamplingWidget(QWidget):
             if ds:
                 for f in ds.files:
                     path = Path(f)
-                    if path.parts[0] == video_stem:
+                    if self._file_belongs_to_video(f, video_stem):
                         # Parse "frame_XXXXXX.png"
                         try:
                             idx = int(path.stem.split('_')[-1])
@@ -239,6 +315,16 @@ class FrameSamplingWidget(QWidget):
             QMessageBox.warning(self, "Empty", "No new frames to save.")
             return
 
+        # For multi-arena datasets, require a specific arena so frames are masked
+        # to one animal (otherwise the saved frames would show every arena).
+        if self._arena_boxes and self._arena_index is None:
+            QMessageBox.warning(
+                self, "Select an Arena",
+                "This is a multi-arena dataset. Choose a specific arena (not "
+                "'All arenas') before saving, so frames are masked to one animal."
+            )
+            return
+
         try:
             target_ds = self._current_subset_name
             # If "New Selection" is selected, we assume saving to "{source} [Manual Samples]"
@@ -250,7 +336,8 @@ class FrameSamplingWidget(QWidget):
                 self._dataset_name,
                 self._video_rel_path,
                 list(self._pending_frames),
-                target_dataset_name=target_ds
+                target_dataset_name=target_ds,
+                arena_index=self._arena_index,
             )
 
             QMessageBox.information(self, "Success", f"Saved {len(self._pending_frames)} frames to '{new_ds_name}'.")

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Callable
 import shutil
 
-from .dataset import Dataset, DatasetType, GLOB_EXTENSIONS_PER_DATASET_TYPE
+from .dataset import Dataset, DatasetType, GLOB_EXTENSIONS_PER_DATASET_TYPE, MultiArenaConfig
 from ..base_operation_helper import BaseOperationHelper
 
 class DatasetOperations(BaseOperationHelper):
@@ -174,6 +174,124 @@ class DatasetOperations(BaseOperationHelper):
         self.add_dataset(dataset_name, new_dataset, overwrite_existing=False)
 
         logging.info(f"Created new dataset {dataset_name} with {len(files)} files")
+
+    def create_multi_arena_dataset(
+        self,
+        dataset_name: str,
+        dataset_data_dir: Path,
+        box_width: int,
+        box_height: int,
+        placements: Dict[str, list],
+        warn_if_exists: Optional[Callable[[str], bool]] = None,
+    ):
+        """
+        Create a VIDEO_COLLECTION dataset whose entries are the parent videos
+        that have at least one placed arena box, plus a ``multi_arena`` clipping
+        config saved into the manifest. No masked video files are written; the
+        per-arena masking is applied virtually on read by downstream consumers.
+        """
+        logging.info(f"Creating multi-arena dataset: {dataset_name}")
+        dataset_dir = self._base_dir / dataset_name
+
+        if not BaseOperationHelper._delete_if_existing(dataset_dir, "dataset", warn_if_exists):
+            return None
+
+        # Only videos with at least one arena become dataset entries.
+        files = sorted(rel for rel, boxes in placements.items() if boxes)
+
+        data_link_dir = dataset_dir / "data"
+        os.makedirs(data_link_dir, exist_ok=True)
+        for rel in files:
+            src_path = Path(dataset_data_dir) / rel
+            dst_link = data_link_dir / rel
+            if not dst_link.parent.exists():
+                os.makedirs(dst_link.parent, exist_ok=True)
+            if not dst_link.exists():
+                try:
+                    os.symlink(src_path, dst_link)
+                except OSError as e:
+                    logging.warning(f"Failed to create symlink for {src_path}: {e}")
+
+        new_dataset = Dataset(
+            name=dataset_name,
+            base_data_path=str(dataset_data_dir),
+            type=DatasetType.VIDEO_COLLECTION,
+            files=files,
+            multi_arena=MultiArenaConfig(
+                box_width=int(box_width),
+                box_height=int(box_height),
+                placements={rel: [(int(x), int(y)) for (x, y) in boxes] for rel, boxes in placements.items() if boxes},
+            ),
+        )
+        self._datasets[dataset_name] = new_dataset
+        self.add_dataset(dataset_name, new_dataset, overwrite_existing=False)
+
+        logging.info(
+            f"Created multi-arena dataset {dataset_name} with {len(files)} videos "
+            f"and {sum(len(b) for b in placements.values())} arena placements"
+        )
+        return new_dataset
+
+    def update_multi_arena_dataset(
+        self,
+        dataset_name: str,
+        box_width: int,
+        box_height: int,
+        placements: Dict[str, list],
+    ) -> Optional[Dataset]:
+        """Revise an existing multi-arena dataset's box size and placements
+        in place, preserving its name and ``base_data_path``.
+
+        Unlike :meth:`create_multi_arena_dataset`, this does NOT delete the
+        dataset directory, so downstream per-arena artifacts (behavior labels,
+        pose/behavior predictions keyed by ``{stem}_arena{k}``) are left on disk.
+        Callers are responsible for warning about invalidated arenas first — see
+        :func:`whisker.core.study.dataset.analyze_arena_edit`. The ``files`` list
+        is recomputed to the videos that still have at least one placed arena,
+        and data symlinks are added for any newly-included videos.
+        """
+        existing = self._datasets.get(dataset_name)
+        if existing is None or not existing.is_multi_arena:
+            raise ValueError(
+                f"Dataset '{dataset_name}' is not an existing multi-arena dataset."
+            )
+
+        files = sorted(rel for rel, boxes in placements.items() if boxes)
+
+        # Ensure a data symlink exists for every included video (new ones may
+        # have gained their first arena in this edit).
+        data_link_dir = self._base_dir / dataset_name / "data"
+        os.makedirs(data_link_dir, exist_ok=True)
+        for rel in files:
+            src_path = Path(existing.base_data_path) / rel
+            dst_link = data_link_dir / rel
+            if not dst_link.parent.exists():
+                os.makedirs(dst_link.parent, exist_ok=True)
+            if not dst_link.exists():
+                try:
+                    os.symlink(src_path, dst_link)
+                except OSError as e:
+                    logging.warning(f"Failed to create symlink for {src_path}: {e}")
+
+        updated = existing.model_copy(update={
+            "files": files,
+            "multi_arena": MultiArenaConfig(
+                box_width=int(box_width),
+                box_height=int(box_height),
+                placements={
+                    rel: [(int(x), int(y)) for (x, y) in boxes]
+                    for rel, boxes in placements.items() if boxes
+                },
+            ),
+        })
+        self._datasets[dataset_name] = updated
+        self.save_dataset(dataset_name)
+
+        logging.info(
+            f"Updated multi-arena dataset {dataset_name}: {len(files)} videos, "
+            f"{sum(len(b) for b in placements.values())} arena placements"
+        )
+        return updated
 
     def add_dataset(
         self,

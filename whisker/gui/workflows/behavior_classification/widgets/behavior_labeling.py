@@ -51,7 +51,12 @@ class BehaviorsLabelingWidget(QWidget):
         self._behaviors: list[str] = []
         self._behavior_dataset: Optional[BehaviorDataset] = None
         self._video_key = None
-        
+
+        # Multi-arena state: the arena boxes for the current video (empty for
+        # ordinary single-arena videos) and the currently selected arena index.
+        self._arena_boxes: list = []
+        self._arena_index: Optional[int] = None
+
         self._init_ui()
         self._connect_signals()
 
@@ -71,6 +76,23 @@ class BehaviorsLabelingWidget(QWidget):
             "Space: Play/Pause | Arrow Keys: Seek Frame | Shift+Arrow: Skip"
         )
         viewer_layout.addWidget(self.media_viewer)
+
+        # --- Arena selector (multi-arena datasets only; hidden otherwise) ---
+        self.arena_row = QWidget()
+        arena_layout = QHBoxLayout(self.arena_row)
+        arena_layout.setContentsMargins(10, 2, 10, 2)
+        arena_layout.setSpacing(10)
+        arena_layout.addWidget(QLabel("Arena:"))
+        self.arena_combo = QComboBox()
+        self.arena_combo.setMaximumHeight(24)
+        self.arena_combo.setToolTip(
+            "Label one arena at a time. Only the selected arena is shown; its "
+            "labels are stored separately per arena."
+        )
+        arena_layout.addWidget(self.arena_combo)
+        arena_layout.addStretch()
+        self.arena_row.setVisible(False)
+        viewer_layout.addWidget(self.arena_row)
 
         # --- Predictions Timeline ---
         self.predictions_control_layout = QHBoxLayout()
@@ -235,6 +257,7 @@ class BehaviorsLabelingWidget(QWidget):
         self.media_viewer.frame_changed.connect(self.prob_plot.set_current_frame)
         self.prob_plot.bout_clicked.connect(self.media_viewer.seek_to_frame)
         self.show_predictions_checkbox.toggled.connect(self._on_show_predictions_toggled)
+        self.arena_combo.currentIndexChanged.connect(self._on_arena_changed)
         self.predictions_combo.currentTextChanged.connect(self._update_plot)
         self.data_changed.connect(self._update_plot)
         self.overlay_checkbox.toggled.connect(self.media_viewer.set_overlay_visible)
@@ -274,8 +297,11 @@ class BehaviorsLabelingWidget(QWidget):
         self.setEnabled(is_valid_context)
         self.media_viewer.set_media(video_path)
         
+        # Default (single-arena) key; multi-arena setup below may override it.
         self._video_key = video_path.name if video_path else None
         self._behavior_dataset = None
+        self._arena_boxes = []
+        self._arena_index = None
 
         if is_valid_context:
             # Load the dataset for this dataset_name
@@ -309,7 +335,75 @@ class BehaviorsLabelingWidget(QWidget):
                     if current_run in run_names:
                         self.predictions_combo.setCurrentText(current_run)
             self.predictions_combo.blockSignals(False)
+
+            # Multi-arena: build the arena selector and apply the first arena's
+            # mask + per-arena key. A no-op (selector hidden) for ordinary videos.
+            self._setup_arenas()
+        else:
+            self.arena_row.setVisible(False)
+            self.media_viewer.clear_arena_mask()
+            self.media_viewer.clear_arena_boxes()
         self._load_data()
+
+    def _setup_arenas(self):
+        """Populate the arena selector from the dataset's multi-arena config for
+        the current video, and apply the first arena (mask + per-arena key)."""
+        boxes = []
+        dataset = (
+            self._workspace.datasets.get(self._dataset_name)
+            if self._workspace and self._dataset_name
+            else None
+        )
+        if dataset is not None and getattr(dataset, "is_multi_arena", False):
+            try:
+                video_rel = str(
+                    Path(self._video_path).relative_to(dataset.base_data_path)
+                ).replace("\\", "/")
+            except (ValueError, TypeError):
+                video_rel = None
+            if video_rel:
+                boxes = dataset.multi_arena.boxes_for(video_rel)
+        self._arena_boxes = boxes
+
+        self.arena_combo.blockSignals(True)
+        self.arena_combo.clear()
+        for k in range(len(boxes)):
+            self.arena_combo.addItem(f"Arena {k + 1}", k)
+        self.arena_combo.blockSignals(False)
+
+        if boxes:
+            self.arena_row.setVisible(True)
+            self.arena_combo.setCurrentIndex(0)
+            # _load_data() (called by set_media) does the label refresh, so skip
+            # the redundant refresh here.
+            self._apply_arena(0, refresh=False)
+        else:
+            self.arena_row.setVisible(False)
+            self._arena_index = None
+            self.media_viewer.clear_arena_mask()
+            self.media_viewer.clear_arena_boxes()
+
+    def _apply_arena(self, index: Optional[int], refresh: bool = True):
+        """Select arena ``index``: mask the display to that arena, re-key the
+        video to ``{stem}_arena{index}`` so its labels are stored separately, and
+        (optionally) refresh the table/plot for the new key."""
+        if index is None or not (0 <= index < len(self._arena_boxes)):
+            return
+        self._arena_index = index
+        stem = Path(self._video_path).stem if self._video_path else ""
+        self._video_key = f"{stem}_arena{index}"
+        self.media_viewer.set_arena_mask(self._arena_boxes[index])
+        # Also outline the arena (highlighted) so its bounds are visible.
+        self.media_viewer.set_arena_boxes(self._arena_boxes, active_index=index)
+        if refresh:
+            self._populate_table()
+            self._update_plot()
+            self._enter_create_mode()
+            self._on_frame_changed(self.media_viewer.get_current_frame())
+
+    @pyqtSlot(int)
+    def _on_arena_changed(self, index: int):
+        self._apply_arena(index, refresh=True)
 
     def _load_data(self):
         """Loads annotations based on the current workspace, dataset, and video."""

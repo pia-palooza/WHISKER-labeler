@@ -1,9 +1,10 @@
 import enum
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -11,6 +12,76 @@ import numpy as np
 from whisker.core.workspace import Workspace
 from whisker.core.study.dataset import Dataset, DatasetType
 from whisker.core.topics import SubsampleParams, SamplingTechnique
+from whisker.core.utils.masking import mask_frame
+
+# Arena "pseudo-video" subdirs are named "{video_stem}_arena{k}".
+_ARENA_SUBDIR_RE = re.compile(r"_arena(\d+)$")
+
+
+def _recover_box_from_masked_frame(img_path: Path) -> Optional[Tuple[int, int, int, int]]:
+    """Recover an arena box (x, y, w, h) from a masked frame: everything outside
+    the arena box was blacked out, so the box is the bounding rectangle of the
+    non-black pixels. Returns None if the frame can't be read or is all black."""
+    img = cv2.imread(str(img_path))
+    if img is None:
+        return None
+    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    ys, xs = np.where(gray > 0)
+    if xs.size == 0 or ys.size == 0:
+        return None
+    x1, y1 = int(xs.min()), int(ys.min())
+    x2, y2 = int(xs.max()), int(ys.max())
+    return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
+
+
+def backfill_arena_boxes(
+    workspace: Workspace, dataset_name: str, persist: bool = True
+) -> Dict[str, Tuple[int, int, int, int]]:
+    """Recover ``arena_boxes`` for a legacy arena-sampled FRAME_SUBSET whose
+    frames predate box persistence. Arena subdirs ("*_arena{k}") are detected by
+    name and each box recovered from a representative masked frame (the bounding
+    rect of non-black pixels). Boxes already recorded are kept. Returns the
+    resulting box map.
+
+    ``persist`` controls whether the recovered boxes are written back to the
+    dataset manifest. The user-facing migration keeps ``persist=True``; callers
+    that only need the boxes for the current run (e.g. arena-crop training) pass
+    ``persist=False`` so an *approximate* pixel-recovered box is never silently
+    saved as authoritative.
+
+    No-op (returns {}) for datasets with no arena-style subdirs, so it is safe to
+    call opportunistically.
+    """
+    dataset = workspace.datasets.get(dataset_name)
+    if not dataset or dataset.type != DatasetType.FRAME_SUBSET:
+        return {}
+
+    base_path = Path(dataset.base_data_path)
+    boxes: Dict[str, Tuple[int, int, int, int]] = dict(dataset.arena_boxes or {})
+
+    # Group files by their leading subdir, keeping one sample per arena subdir.
+    sample_per_subdir: Dict[str, str] = {}
+    for rel in dataset.files:
+        subdir = Dataset.arena_subdir_of(rel)
+        parts = Path(str(rel).replace("\\", "/")).parts
+        if len(parts) < 2:
+            continue
+        if _ARENA_SUBDIR_RE.search(subdir) and subdir not in boxes and subdir not in sample_per_subdir:
+            sample_per_subdir[subdir] = rel
+
+    for subdir, rel in sample_per_subdir.items():
+        box = _recover_box_from_masked_frame(base_path / rel)
+        if box is not None:
+            boxes[subdir] = box
+            logging.info(f"Recovered arena box for '{dataset_name}/{subdir}': {box}")
+        else:
+            logging.warning(f"Could not recover arena box for '{dataset_name}/{subdir}'.")
+
+    if persist and boxes and boxes != (dataset.arena_boxes or {}):
+        dataset.arena_boxes = boxes
+        workspace.save_dataset(dataset_name)
+
+    return boxes
 
 
 class FrameSampler:
@@ -57,25 +128,50 @@ class FrameSampler:
         self._save_params(new_dataset_dir)
 
         new_dataset_files = []
+        # Maps each arena subdir ("{stem}_arena{k}") to the fixed arena box its
+        # masked frames were cut from, so arena-crop training can recover it.
+        arena_box_map: dict[str, Tuple[int, int, int, int]] = {}
         # DEV_NOTE: We must construct full, absolute paths to the source videos
         # by combining the dataset's base path with the relative file paths.
-        video_files = [
-            Path(source_dataset.base_data_path) / p for p in source_dataset.files
-        ]
+        num_videos = len(source_dataset.files)
 
-        for i, video_path in enumerate(video_files):
+        for i, rel in enumerate(source_dataset.files):
+            video_path = Path(source_dataset.base_data_path) / rel
+            video_rel = str(rel).replace("\\", "/")
             logging.info(
-                f"Sampling video {i + 1}/{len(video_files)}: '{video_path.name}'"
+                f"Sampling video {i + 1}/{num_videos}: '{video_path.name}'"
             )
             try:
                 sampled_frames = self._sample_frames_from_video(video_path)
-                for frame_index, frame_data in sampled_frames:
-                    # DEV_NOTE: Save the frame and get its path relative to the new
-                    # dataset's 'data' directory.
-                    relative_path = self._save_frame(
-                        frame_data, frame_index, video_path, output_data_dir
-                    )
-                    new_dataset_files.append(str(relative_path))
+
+                # Multi-arena: emit one masked, per-arena frame set per placed box
+                # (each arena becomes its own subdir so it labels/trains as an
+                # independent unit). Frames stay full-size; only pixels outside
+                # the arena box are blacked out, so coordinates remain full-frame.
+                arena_boxes = (
+                    source_dataset.multi_arena.boxes_for(video_rel)
+                    if source_dataset.is_multi_arena
+                    else []
+                )
+                if arena_boxes:
+                    for arena_idx, box in enumerate(arena_boxes):
+                        subdir = f"{video_path.stem}_arena{arena_idx}"
+                        arena_box_map[subdir] = tuple(int(v) for v in box)
+                        for frame_index, frame_data in sampled_frames:
+                            masked = mask_frame(frame_data, box)
+                            relative_path = self._save_frame(
+                                masked, frame_index, video_path, output_data_dir,
+                                subdir_name=subdir,
+                            )
+                            new_dataset_files.append(str(relative_path))
+                else:
+                    for frame_index, frame_data in sampled_frames:
+                        # DEV_NOTE: Save the frame and get its path relative to the
+                        # new dataset's 'data' directory.
+                        relative_path = self._save_frame(
+                            frame_data, frame_index, video_path, output_data_dir
+                        )
+                        new_dataset_files.append(str(relative_path))
             except Exception as e:
                 logging.error(
                     f"Could not sample frames from '{video_path.name}': {e}",
@@ -95,6 +191,7 @@ class FrameSampler:
             type=DatasetType.FRAME_SUBSET,
             base_data_path=str(output_data_dir.resolve()),
             files=sorted(new_dataset_files),
+            arena_boxes=arena_box_map or None,
         )
         # DEV_NOTE: The call to add_dataset is now correct and avoids overwriting.
         self._workspace.add_dataset(
@@ -417,13 +514,17 @@ class FrameSampler:
         frame_index: int,
         video_path: Path,
         output_data_dir: Path,
+        subdir_name: Optional[str] = None,
     ) -> Path:
         """
         Saves a single frame to a hierarchical output directory and returns
         the path relative to that directory.
+
+        ``subdir_name`` overrides the per-video output subdir (used to keep each
+        arena's masked frames in their own group); defaults to the video stem.
         """
         # Create a subdirectory for the video to avoid filename clashes
-        video_specific_dir = output_data_dir / video_path.stem
+        video_specific_dir = output_data_dir / (subdir_name or video_path.stem)
         video_specific_dir.mkdir(exist_ok=True)
 
         filename = f"frame_{frame_index:06d}.png"
@@ -451,12 +552,19 @@ def save_manual_frames(
     source_dataset_name: str,
     video_rel_path: str,
     frame_indices: List[int],
-    target_dataset_name: str = None
+    target_dataset_name: str = None,
+    arena_index: Optional[int] = None,
 ) -> str:
     """
     Extracts specific frames from a video and saves them to a FRAME_SUBSET dataset.
     If target_dataset_name is provided and exists, it appends to it.
     Otherwise, it creates '{source_dataset_name} [Manual Samples]'.
+
+    ``arena_index``: when the source is a multi-arena dataset, masks each saved
+    frame to that arena's box and stores it under a per-arena subdir
+    ("{video_stem}_arena{k}"), so pose labeling/training see one masked arena
+    per frame (single mouse). None (default) keeps the original whole-frame
+    behavior.
     """
     source_dataset = workspace.datasets.get(source_dataset_name)
     if not source_dataset:
@@ -492,7 +600,18 @@ def save_manual_frames(
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
     video_stem = video_path.stem
-    video_out_dir = target_dir / video_stem
+
+    # Multi-arena: mask to the chosen arena and use its per-arena subdir.
+    arena_box = None
+    out_subdir = video_stem
+    if arena_index is not None and source_dataset.is_multi_arena:
+        video_rel_norm = str(video_rel_path).replace("\\", "/")
+        boxes = source_dataset.multi_arena.boxes_for(video_rel_norm)
+        if 0 <= arena_index < len(boxes):
+            arena_box = boxes[arena_index]
+            out_subdir = source_dataset.multi_arena.arena_stem(video_rel_norm, arena_index)
+
+    video_out_dir = target_dir / out_subdir
     logging.info(f"Ensuring {video_out_dir} exists")
     video_out_dir.mkdir(exist_ok=True, parents=True)
 
@@ -510,6 +629,8 @@ def save_manual_frames(
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if ret:
+                if arena_box is not None:
+                    frame = mask_frame(frame, arena_box)
                 filename = f"frame_{frame_idx:06d}.png"
                 out_path = video_out_dir / filename
                 logging.info(f"Writing {out_path}")
@@ -517,7 +638,7 @@ def save_manual_frames(
 
                 # Rel path from dataset base (which is target_dir aka 'data' subdir)
                 # The Dataset class expects files relative to base_data_path
-                rel_path = f"{video_stem}/{filename}"
+                rel_path = f"{out_subdir}/{filename}"
                 new_files.append(rel_path)
             else:
                 logging.warning(f"Could not read frame {frame_idx} from {video_path.name}")
@@ -534,6 +655,11 @@ def save_manual_frames(
                 target_dataset.files.append(f)
                 added_count += 1
         target_dataset.files.sort()
+        # Record this arena's box so arena-crop training can recover it.
+        if arena_box is not None:
+            boxes = dict(target_dataset.arena_boxes or {})
+            boxes[out_subdir] = tuple(int(v) for v in arena_box)
+            target_dataset.arena_boxes = boxes
         workspace.save_dataset(target_dataset_name)
         logging.info(f"Added {added_count} frames to existing dataset '{target_dataset_name}'.")
     else:
@@ -542,7 +668,8 @@ def save_manual_frames(
             name=target_dataset_name,
             type=DatasetType.FRAME_SUBSET,
             base_data_path=str(target_dir.resolve()),
-            files=sorted(new_files)
+            files=sorted(new_files),
+            arena_boxes={out_subdir: tuple(int(v) for v in arena_box)} if arena_box is not None else None,
         )
         workspace.add_dataset(target_dataset_name, new_dataset, overwrite_existing=False)
         logging.info(f"Created new dataset '{target_dataset_name}' with {len(new_files)} frames.")
