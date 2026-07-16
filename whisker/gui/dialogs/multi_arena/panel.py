@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cv2
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import Qt, QPointF, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -79,6 +79,10 @@ class MultiArenaDatasetPanel(QWidget):
         # button reads "Save Changes" instead of "Create ...").
         self._edit_mode: bool = False
 
+        # Combo-box status icons: green check for videos that have arenas drawn,
+        # a same-sized blank placeholder for those that don't (keeps text aligned).
+        self._done_icon, self._empty_icon = self._build_indicator_icons()
+
         self._build_ui()
 
     # ==================================================================
@@ -108,6 +112,7 @@ class MultiArenaDatasetPanel(QWidget):
         root.addLayout(btn_row)
 
         self.config_changed.connect(self._update_create_enabled)
+        self.config_changed.connect(self._update_video_indicators)
 
         # Disabled until a folder with videos is selected (needs frame_slider
         # from the canvas, so run after both panels are built).
@@ -455,6 +460,49 @@ class MultiArenaDatasetPanel(QWidget):
 
     def _update_box_count(self):
         self.box_count_label.setText(f"Boxes on this video: {len(self._box_items)}")
+
+    # ==================================================================
+    # Video-status indicators
+    # ==================================================================
+    def _build_indicator_icons(self) -> Tuple[QIcon, QIcon]:
+        """Builds the two combo-box status icons: a green check for videos that
+        have at least one arena box placed, and a same-sized transparent
+        placeholder for those that don't (so the video names stay aligned)."""
+        size = 16
+
+        done = QPixmap(size, size)
+        done.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(done)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2ECC71"))
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        pen = QPen(QColor("white"))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPolyline(QPolygonF([
+            QPointF(4.5, 8.5), QPointF(7.0, 11.0), QPointF(11.5, 5.0),
+        ]))
+        painter.end()
+
+        empty = QPixmap(size, size)
+        empty.fill(Qt.GlobalColor.transparent)
+
+        return QIcon(done), QIcon(empty)
+
+    def _update_video_indicators(self):
+        """Refreshes the green 'arena drawn' check next to each video in the
+        combo box. A video is marked done once it has at least one placed box,
+        so it's obvious which videos still need arenas."""
+        # Capture the active video's live boxes first so its icon is accurate.
+        self._sync_current_placements()
+        for i in range(self.video_combo.count()):
+            video_rel = self.video_combo.itemData(i)
+            has_boxes = bool(self._placements.get(video_rel))
+            icon = self._done_icon if has_boxes else self._empty_icon
+            self.video_combo.setItemIcon(i, icon)
 
     # ==================================================================
     # State access
