@@ -217,6 +217,7 @@ class ExportAnnotationsDialog(QDialog):
                 "behavior_labels/labels.h5",
                 f"{plan.behavior.num_labeled_videos} labeled keys",
             )
+            self._add_row("behavior_labels/metadata.json", "behavior label metadata")
         if self._include_media():
             self._add_row(
                 f"{plan.media_dirname}/",

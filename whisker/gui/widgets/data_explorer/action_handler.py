@@ -510,25 +510,20 @@ class ActionHandler(QObject):
                         lambda: self._edit_arenas(dataset_name)
                     )
 
-                # Export Annotations (image/frame/video datasets) -> bundle
+                # Export (image/frame/video datasets) -> annotation bundle.
+                # One entry point for all annotation export: project + manifest
+                # + pose labels (if any) + behavior labels (if any, as both
+                # labels.h5 and a JSON summary) + an "include video files"
+                # checkbox in the dialog itself.
                 if dataset and dataset.type in (
                     DatasetType.IMAGE_COLLECTION,
                     DatasetType.FRAME_SUBSET,
                     DatasetType.VIDEO_COLLECTION,
                 ):
-                    export_annotations_action = menu.addAction("Export Annotations...")
+                    export_annotations_action = menu.addAction("Export...")
                     export_annotations_action.triggered.connect(
                         lambda: self._export_annotations(dataset_name)
                     )
-
-                # Behavior Export Action (Legacy/Labels)
-                if dataset and dataset.type == DatasetType.VIDEO_COLLECTION:
-                    labels = self._workspace.behavior_labels.get_behavior_labels(dataset_name)
-                    if labels and not labels.bouts.empty:
-                        export_behavior_action = menu.addAction("Export Behavior Labels...")
-                        export_behavior_action.triggered.connect(
-                            lambda: self._export_behavior_labels(dataset_name)
-                        )
 
                 # --- Behavior Model Export Actions ---
                 if self._current_model_run:
@@ -739,48 +734,6 @@ class ActionHandler(QObject):
             path_str if os.path.isdir(path_str) else os.path.dirname(path_str)
         )
         QDesktopServices.openUrl(url)
-
-    def _export_behavior_labels(self, dataset_name: str):
-        if not self._workspace:
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self.parent_widget,
-            "Export Behavior Labels",
-            f"{dataset_name}_behavior_labels.json",
-            "JSON Files (*.json)"
-        )
-
-        if not file_path:
-            return
-
-        try:
-            labels = self._workspace.behavior_labels.get_behavior_labels(dataset_name)
-            # Convert DataFrame to list of dicts for JSON export
-            bouts_data = labels.bouts.to_dict(orient="records")
-
-            # Also include the behaviors list for completeness
-            export_data = {
-                "dataset_name": dataset_name,
-                "behaviors": labels.behaviors,
-                "bouts": bouts_data
-            }
-
-            with open(file_path, 'w') as f:
-                json.dump(export_data, f, indent=4)
-
-            QMessageBox.information(
-                self.parent_widget,
-                "Export Successful",
-                f"Behavior labels exported to:\n{file_path}"
-            )
-        except Exception as e:
-            logging.error(f"Failed to export behavior labels: {e}")
-            QMessageBox.critical(
-                self.parent_widget,
-                "Export Failed",
-                f"An error occurred during export:\n{e}"
-            )
 
     # --- Behavior Export Actions ---
 

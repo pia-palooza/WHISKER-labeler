@@ -47,6 +47,7 @@ from typing import Callable, List, Optional
 
 from whisker.core.study.dataset import Dataset, DatasetType
 from whisker.core.study.project import Project
+from whisker.services.behavior_classification.public.data_structures import BehaviorDataset
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ VIDEOS_DIRNAME = "videos"
 MANIFEST_FILENAME = "manifest.json"
 LABELS_H5_FILENAME = "labels.h5"
 POSE_METADATA_FILENAME = "metadata.json"
+BEHAVIOR_METADATA_FILENAME = "metadata.json"
 
 # All current dataset types are exportable.
 EXPORTABLE_DATASET_TYPES = (
@@ -331,6 +333,33 @@ def export_annotation_bundle(
             "labels_h5": f"{BEHAVIOR_LABELS_DIRNAME}/{LABELS_H5_FILENAME}",
             "num_labeled_videos": plan.behavior.num_labeled_videos,
         }
+        # The HDF5 alone is enough to reload the data (behaviors + bouts are
+        # embedded in it), but a JSON summary alongside it — mirroring the
+        # pose_labels/metadata.json convention — makes the export usable
+        # without loading the HDF5 (quick inspection, other tooling, etc).
+        try:
+            beh_ds = BehaviorDataset.from_file(plan.behavior.labels_h5)
+            beh_json_dst = bundle_dir / BEHAVIOR_LABELS_DIRNAME / BEHAVIOR_METADATA_FILENAME
+            beh_json_dst.parent.mkdir(parents=True, exist_ok=True)
+            # NaN (e.g. an unset bout probability) isn't valid JSON; null is.
+            bouts_json_safe = beh_ds.bouts.astype(object).where(
+                beh_ds.bouts.notna(), None
+            )
+            with open(beh_json_dst, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "dataset_name": plan.dataset.name,
+                        "behaviors": beh_ds.behaviors,
+                        "bouts": bouts_json_safe.to_dict(orient="records"),
+                    },
+                    f,
+                    indent=4,
+                )
+            behavior_info["metadata"] = (
+                f"{BEHAVIOR_LABELS_DIRNAME}/{BEHAVIOR_METADATA_FILENAME}"
+            )
+        except Exception as e:
+            logger.warning("Could not write behavior labels JSON summary: %s", e)
 
     # 5. Media (frames or videos) — the bulk of the work when copied
     media_dirname = plan.media_dirname

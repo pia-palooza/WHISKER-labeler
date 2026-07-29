@@ -243,8 +243,8 @@ class MainWindow(QMainWindow):
         export_menu = QMenu("Export", self)
         file_menu.addMenu(export_menu)
         
-        self._export_labels_action = QAction("Export Behavior Labels...", self)
-        self._export_labels_action.triggered.connect(self._export_behavior_labels)
+        self._export_labels_action = QAction("Export Annotations...", self)
+        self._export_labels_action.triggered.connect(self._export_annotations)
         export_menu.addAction(self._export_labels_action)
         
         self._export_charts_action = QAction("Export Charts (.png)...", self)
@@ -799,10 +799,10 @@ class MainWindow(QMainWindow):
         bus.publish("request/workspace/models/refresh")
         bus.publish("request/workspace/predictions/refresh")
 
-    def _export_behavior_labels(self):
+    def _export_annotations(self):
         dataset_name, _ = self._get_active_dataset_and_video()
         if dataset_name and hasattr(self.data_explorer, "action_handler"):
-            self.data_explorer.action_handler._export_behavior_labels(dataset_name)
+            self.data_explorer.action_handler._export_annotations(dataset_name)
 
     def _export_behavior_charts(self):
         dataset_name, _ = self._get_active_dataset_and_video()

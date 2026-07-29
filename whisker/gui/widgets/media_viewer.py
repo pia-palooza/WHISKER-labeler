@@ -352,12 +352,57 @@ class MediaControls(QWidget):
 
 
 class VideoGraphicsView(QGraphicsView):
+    """QGraphicsView that also owns manual zoom/pan on top of whatever
+    ``fitInView`` transform the owner last applied. Scroll to zoom (around the
+    cursor), drag to pan once zoomed in, double-click to reset."""
+
+    doubleClicked = pyqtSignal()
+
+    ZOOM_STEP = 1.15
+    MIN_ZOOM = 1.0
+    MAX_ZOOM = 8.0
+
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         self._left_name = ""
         self._right_name = ""
         self._side_by_side = False
         self._show_overlay_names = True
+        self._zoom_level = 1.0
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+
+    def reset_zoom_baseline(self):
+        """Call right after the owner applies a fresh ``fitInView`` transform;
+        establishes that transform as the new 1.0x zoom baseline."""
+        self._zoom_level = 1.0
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+
+    def wheelEvent(self, event):
+        if self.scene() is None or self.scene().sceneRect().isEmpty():
+            super().wheelEvent(event)
+            return
+        angle = event.angleDelta().y()
+        if angle == 0:
+            super().wheelEvent(event)
+            return
+        factor = self.ZOOM_STEP if angle > 0 else 1.0 / self.ZOOM_STEP
+        new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self._zoom_level * factor))
+        applied = new_zoom / self._zoom_level if self._zoom_level else 1.0
+        if applied != 1.0:
+            self._zoom_level = new_zoom
+            self.scale(applied, applied)
+            self.setDragMode(
+                QGraphicsView.DragMode.ScrollHandDrag
+                if self._zoom_level > self.MIN_ZOOM
+                else QGraphicsView.DragMode.NoDrag
+            )
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
 
     def set_overlay_names(self, left: str, right: str):
         self._left_name = left
@@ -550,6 +595,7 @@ class MediaViewerWidget(QWidget):
         self.controls.skip_requested.connect(self._step_frames) # Reuse logic
         self.controls.goto_frame_requested.connect(self.seek_to_frame)
         self.controls.speed_changed.connect(self._media_player.setPlaybackRate)
+        self.view.doubleClicked.connect(self._fit_view)
 
     # --- API ---
 
@@ -955,11 +1001,12 @@ class MediaViewerWidget(QWidget):
         target_item = None
         
         if self._side_by_side and self.image_item.pixmap():
-            # In side-by-side, the scene bounds are manually managed 
+            # In side-by-side, the scene bounds are manually managed
             # to be [0, 0, w*2, h]. We use the sceneRect itself.
             rect = self.scene.sceneRect()
             self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
             self.overlay_proxy.setGeometry(rect)
+            self.view.reset_zoom_baseline()
             return
 
         if self.video_item.isVisible():
@@ -982,6 +1029,7 @@ class MediaViewerWidget(QWidget):
                 self.view.fitInView(roi, Qt.AspectRatioMode.KeepAspectRatio)
             else:
                 self.view.fitInView(target_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self.view.reset_zoom_baseline()
 
     # --- Converters & Accessors ---
 

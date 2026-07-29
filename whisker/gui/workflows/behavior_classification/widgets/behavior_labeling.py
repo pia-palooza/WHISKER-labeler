@@ -73,7 +73,8 @@ class BehaviorsLabelingWidget(QWidget):
 
         self.media_viewer = MediaViewerWidget()
         self.media_viewer.setToolTip(
-            "Space: Play/Pause | Arrow Keys: Seek Frame | Shift+Arrow: Skip"
+            "Space: Play/Pause | Arrow Keys: Seek Frame | Shift+Arrow: Skip\n"
+            "Scroll: Zoom In/Out | Drag: Pan | Double-Click: Reset Zoom"
         )
         viewer_layout.addWidget(self.media_viewer)
 
