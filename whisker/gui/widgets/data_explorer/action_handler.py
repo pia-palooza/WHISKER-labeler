@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QUrl, QThreadPool, QObject
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
     QWidget,
     QMessageBox,
@@ -503,6 +503,13 @@ class ActionHandler(QObject):
                     lambda: self._execute_dataset_refresh(dataset_name)
                 )
 
+                # Copy the source folder path (original videos/frames on disk)
+                if dataset and dataset.base_data_path:
+                    copy_path_action = menu.addAction("Copy Source Path")
+                    copy_path_action.triggered.connect(
+                        lambda: self._copy_path_to_clipboard(dataset.base_data_path)
+                    )
+
                 # Edit Arenas (multi-arena datasets only)
                 if dataset and getattr(dataset, "is_multi_arena", False):
                     edit_arenas_action = menu.addAction("Edit Arenas...")
@@ -734,6 +741,9 @@ class ActionHandler(QObject):
             path_str if os.path.isdir(path_str) else os.path.dirname(path_str)
         )
         QDesktopServices.openUrl(url)
+
+    def _copy_path_to_clipboard(self, path_str: str):
+        QGuiApplication.clipboard().setText(str(path_str))
 
     # --- Behavior Export Actions ---
 
