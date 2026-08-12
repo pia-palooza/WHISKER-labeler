@@ -76,6 +76,12 @@ THEMES = {
         "bg_main": "#1a0d0d", "bg_dark": "#120909", "bg_panel": "#261313", "bg_header": "#381a1a",
         "accent": "#ff4d4d", "text_main": "#f5e1e1", "text_tab": "#8c5858", "border": "#4d2626"
     },
+    # Listed alongside Money Mode in the Style/Theme menu: a dark, true-neutral
+    # red (not near-black) with a vivid scarlet accent for a striking look.
+    "Manreet Red": {
+        "bg_main": "#3a1116", "bg_dark": "#2a0c10", "bg_panel": "#4a161c", "bg_header": "#5c1e24",
+        "accent": "#ff2748", "text_main": "#fbeef0", "text_tab": "#d1808f", "border": "#7a2530"
+    },
     "Matrix Console": {
         "bg_main": "#050805", "bg_dark": "#020402", "bg_panel": "#0b120b", "bg_header": "#111c11",
         "accent": "#00ff00", "text_main": "#a3ffa3", "text_tab": "#476c47", "border": "#1a2e1a"
@@ -196,6 +202,42 @@ STYLESHEET_TEMPLATE = """
     QTreeView::item:selected {{ background-color: {bg_header}; color: {accent}; }}
     QTreeView::item:selected:active {{ background-color: {bg_header}; color: {accent}; }}
     QTreeView::item:selected:!active {{ background-color: {bg_header}; color: {accent}; }}
+
+    /* Text/number entry + dropdowns (e.g. the "Run:" prediction selector, frame
+       go-to and start/end-frame spinboxes) -- otherwise these stay native
+       stark-white on every theme, dark ones included. */
+    QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+        background-color: {bg_panel};
+        color: {text_main};
+        border: 1px solid {border};
+        border-radius: 3px;
+        padding: 2px 4px;
+        selection-background-color: {accent};
+    }}
+    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border: 1px solid {accent}; }}
+    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ color: {text_tab}; }}
+    QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+        background-color: {bg_header}; border: none; width: 14px;
+    }}
+    QComboBox::drop-down {{ border: none; background-color: {bg_header}; width: 18px; }}
+    QComboBox QAbstractItemView {{
+        background-color: {bg_panel}; color: {text_main}; border: 1px solid {border};
+        selection-background-color: {bg_header}; selection-color: {accent}; outline: 0;
+    }}
+
+    /* Tables (e.g. the per-video behavior-bout / timestamp list). */
+    QTableWidget, QTableView {{
+        background-color: {bg_panel};
+        color: {text_main};
+        gridline-color: {border};
+        border: 1px solid {border};
+        selection-background-color: {bg_header};
+        selection-color: {accent};
+    }}
+    QHeaderView::section {{
+        background-color: {bg_header}; color: {text_main};
+        padding: 4px; border: 1px solid {border}; font-weight: bold;
+    }}
 
     /* Sliders (e.g. the video seek bar) -- keep them clearly visible on every theme. */
     QSlider::groove:horizontal {{ height: 6px; background: {border}; border-radius: 3px; }}

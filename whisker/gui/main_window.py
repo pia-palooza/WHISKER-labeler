@@ -369,7 +369,7 @@ class MainWindow(QMainWindow):
             "Lilac Mist",
             "Sage Forest",
             "Peach Breeze",
-            "Harvest Gold"
+            "Harvest Gold",
         ]
         for theme in themes:
             action = QAction(theme, self)
@@ -378,12 +378,23 @@ class MainWindow(QMainWindow):
             theme_group.addAction(action)
             theme_menu.addAction(action)
             self._theme_actions[theme] = action
-            
+
         theme_menu.addSeparator()
         self._toggle_money_action = QAction("$$$$ Money Mode $$$", self)
         self._toggle_money_action.setCheckable(True)
         self._toggle_money_action.triggered.connect(self._toggle_money_mode_directly)
         theme_menu.addAction(self._toggle_money_action)
+
+        # Listed just under Money Mode: a standalone selectable theme (not tied
+        # to the Money Mode toggle/coin-rain effect).
+        manreet_red_action = QAction("Manreet Red", self)
+        manreet_red_action.setCheckable(True)
+        manreet_red_action.triggered.connect(
+            lambda checked, name="Manreet Red": self._set_theme_selection(name)
+        )
+        theme_group.addAction(manreet_red_action)
+        theme_menu.addAction(manreet_red_action)
+        self._theme_actions["Manreet Red"] = manreet_red_action
 
         # --- Tools Menu ---
         tools_menu = menu_bar.addMenu("Tools")
