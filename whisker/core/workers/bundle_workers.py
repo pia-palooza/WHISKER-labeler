@@ -1,9 +1,13 @@
-"""Background jobs for exporting/importing annotation bundles.
+"""Background job for exporting an annotation bundle.
 
-These wrap the pure-filesystem functions in :mod:`whisker.core.bundle` so the
-GUI can run them on a worker thread with progress reporting. All conflict
-(overwrite) decisions are resolved by the caller *before* the job starts, so
-the jobs never pop dialogs and never mutate the in-memory workspace.
+Wraps the pure-filesystem export in :mod:`whisker.core.bundle` so the GUI can
+run it on a worker thread with progress reporting. All conflict (overwrite)
+decisions are resolved by the caller *before* the job starts, so the job
+never pops dialogs and never mutates the in-memory workspace.
+
+(Dataset *import* no longer goes through a "bundle" — see
+:mod:`whisker.core.manual_import` and
+:class:`whisker.core.workers.manual_import_workers.ImportComponentsJob`.)
 """
 
 from pathlib import Path
@@ -32,31 +36,6 @@ class ExportBundleJob(BaseJob):
             self.bundle_dir,
             overwrite=self.overwrite,
             include_media=self.include_media,
-            progress_cb=self.report_progress,
-            cancel_cb=lambda: self.is_cancelled,
-        )
-
-
-class ImportBundleJob(BaseJob):
-    def __init__(
-        self,
-        workspace,
-        bundle_dir: Path,
-        overwrite: bool = False,
-        media_source_dir=None,
-    ):
-        super().__init__()
-        self.workspace = workspace
-        self.bundle_dir = Path(bundle_dir)
-        self.overwrite = overwrite
-        self.media_source_dir = media_source_dir
-
-    def run(self) -> dict:
-        return bundle.import_annotation_bundle(
-            self.workspace,
-            self.bundle_dir,
-            overwrite=self.overwrite,
-            media_source_dir=self.media_source_dir,
             progress_cb=self.report_progress,
             cancel_cb=lambda: self.is_cancelled,
         )

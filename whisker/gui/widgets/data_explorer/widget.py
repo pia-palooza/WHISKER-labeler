@@ -59,8 +59,8 @@ class Widget(VerticalCollapsiblePanel):
         self.create_project_action = self.options_menu.addAction("Create Project...")
         self.create_dataset_action = self.options_menu.addAction("Create Dataset...")
         self.import_labels_action = self.options_menu.addAction("Import Pose Labels...")
-        self.import_bundle_action = self.options_menu.addAction(
-            "Import Annotation Bundle..."
+        self.import_dataset_action = self.options_menu.addAction(
+            "Import Dataset..."
         )
 
         self.options_button.setMenu(self.options_menu)
@@ -69,7 +69,7 @@ class Widget(VerticalCollapsiblePanel):
         self.create_project_action.triggered.connect(self.show_create_project_dialog)
         self.create_dataset_action.triggered.connect(self.show_create_dataset_dialog)
         self.import_labels_action.triggered.connect(self.show_import_pose_labels_dialog)
-        self.import_bundle_action.triggered.connect(self.show_import_bundle_dialog)
+        self.import_dataset_action.triggered.connect(self.show_import_dataset_dialog)
 
         # 1. Controls (Dropdown + Blind Mode)
         self.dropdown = QComboBox()
@@ -217,9 +217,9 @@ class Widget(VerticalCollapsiblePanel):
         """Facade method to trigger labels import."""
         self.action_handler.show_import_pose_labels_dialog()
 
-    def show_import_bundle_dialog(self):
-        """Facade method to trigger annotation-bundle import."""
-        self.action_handler.show_import_bundle_dialog()
+    def show_import_dataset_dialog(self):
+        """Facade method to trigger dataset import."""
+        self.action_handler.show_import_dataset_dialog()
 
 
 
@@ -284,7 +284,7 @@ class Widget(VerticalCollapsiblePanel):
 
         # Visibility Toggle
         self.import_labels_action.setVisible(is_ds_view)
-        self.import_bundle_action.setVisible(is_ds_view)
+        self.import_dataset_action.setVisible(is_ds_view)
         self.blind_mode_checkbox.setVisible(has_ws and is_ds_view)
         self.filter_dropdown.setVisible(has_ws and is_ds_view)
 
@@ -293,7 +293,7 @@ class Widget(VerticalCollapsiblePanel):
         self.create_project_action.setEnabled(has_ws)
         self.create_dataset_action.setEnabled(has_ws)
         self.import_labels_action.setEnabled(has_ws)
-        self.import_bundle_action.setEnabled(has_ws)
+        self.import_dataset_action.setEnabled(has_ws)
 
         # Populate
         self.controller.populate_tree(current_group)

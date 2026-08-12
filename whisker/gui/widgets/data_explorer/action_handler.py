@@ -26,9 +26,10 @@ from whisker.gui.dialogs import (
     WarnIfExistsDialog,
     ImportLabelsDialog,
     ExportAnnotationsDialog,
-    ImportBundleDialog,
+    ImportDatasetDialog,
 )
-from whisker.core.workers.bundle_workers import ExportBundleJob, ImportBundleJob
+from whisker.core.workers.bundle_workers import ExportBundleJob
+from whisker.core.workers.manual_import_workers import ImportComponentsJob
 from whisker.gui.signals import MessageBus
 from whisker.gui.worker_wrapper import Worker
 from whisker.gui.widgets.export_clip_dialog import ExportClipDialog
@@ -316,7 +317,7 @@ class ActionHandler(QObject):
         worker.signals.error.connect(_on_error)
         self.thread_pool.start(worker)
 
-    # --- Annotation Bundle Export / Import ---
+    # --- Dataset Export / Import ---
 
     def _export_annotations(self, dataset_name: str):
         """Export an image/frame dataset's annotations (project, manifest, label
@@ -374,22 +375,22 @@ class ActionHandler(QObject):
             "Export Failed",
         )
 
-    def show_import_bundle_dialog(self):
-        """Import an annotation bundle produced by 'Export Annotations...'."""
+    def show_import_dataset_dialog(self):
+        """Import a dataset from its individually-picked pieces (project
+        file, dataset info file, media folder, optional label files)."""
         if not self._workspace:
             QMessageBox.warning(
                 self.parent_widget,
                 "Workspace Not Found",
-                "Please open a workspace before importing a bundle.",
+                "Please open a workspace before importing a dataset.",
             )
             return
 
-        dialog = ImportBundleDialog(self._workspace, self.parent_widget)
+        dialog = ImportDatasetDialog(self._workspace, self.parent_widget)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        bundle_dir = dialog.bundle_dir
-        if bundle_dir is None:
+        if dialog.dataset is None or dialog.project is None or dialog.media_dir is None:
             return
 
         def _on_finished(result):
@@ -405,13 +406,10 @@ class ActionHandler(QObject):
                 f"Imported dataset '{result['dataset_name']}' "
                 f"(project '{result['project_name']}').\n\n"
             )
-            if result.get("media_included"):
-                msg += (
-                    f"{result['media_kind'].capitalize()} copied: "
-                    f"{result['num_media_copied']}/{result['num_media']}"
-                )
-            else:
-                msg += f"{result['media_kind'].capitalize()} referenced (not copied)."
+            msg += (
+                f"{result['media_kind'].capitalize()} copied: "
+                f"{result['num_media_copied']}/{result['num_media']}"
+            )
             extras = []
             if result.get("pose_imported"):
                 extras.append("pose labels")
@@ -424,13 +422,19 @@ class ActionHandler(QObject):
             QMessageBox.information(self.parent_widget, "Import Complete", msg)
 
         self._run_bundle_job(
-            ImportBundleJob(
+            ImportComponentsJob(
                 self._workspace,
-                bundle_dir,
+                dialog.dataset_name,
+                dialog.project,
+                dialog.project_source_path,
+                dialog.dataset,
+                dialog.media_dir,
+                pose_labels_path=dialog.pose_labels_path,
+                pose_metadata_path=dialog.pose_metadata_path,
+                behavior_labels_path=dialog.behavior_labels_path,
                 overwrite=dialog.overwrite,
-                media_source_dir=dialog.media_source_dir,
             ),
-            "Importing Annotation Bundle",
+            "Importing Dataset",
             _on_finished,
             "Import Failed",
         )

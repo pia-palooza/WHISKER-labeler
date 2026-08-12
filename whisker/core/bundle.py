@@ -1,16 +1,15 @@
-"""Tidy, self-describing annotation *bundles* for whisker-labeler.
-
-A bundle packages everything needed to move a labeled dataset between
-whisker-labeler workspaces (and into full whisker): the dataset manifest, the
-project it was labeled under, the pose/behavior label HDF5s and their metadata,
-and (optionally) a copy of the actual media — frame images or video files —
-with original filenames and folder structure preserved.
+"""Export a labeled dataset out of whisker-labeler as a tidy, self-describing
+folder — everything needed to hand it to someone else or move it into
+another whisker-labeler workspace: the dataset manifest, the project it was
+labeled under, the pose/behavior label HDF5s and their metadata, and
+(optionally) a copy of the actual media — frame images or video files — with
+original filenames and folder structure preserved.
 
 Layout on disk::
 
-    <bundle_name>/
-        export_info.json          # machine-readable description of the bundle
-        README.txt                # human-readable summary
+    <export_name>/
+        export_info.json          # machine-readable description of the export
+        README.txt                # human-readable summary + exact import paths
         project/
             <project_name>.json   # the Project definition
         dataset/
@@ -23,12 +22,17 @@ Layout on disk::
         frames/  or  videos/      # the media files (omitted for reference-only)
             <original relative paths ...>
 
-``export_info.json`` records every relative path in the bundle so re-import is
-deterministic and does not depend on this app's internal directory layout.
-
 For video datasets the media copy is optional (``media_included``): a
-reference-only bundle records the original media paths instead of copying the
-(potentially very large) video files, and the importer supplies the videos.
+reference-only export records the original media paths instead of copying the
+(potentially very large) video files, and whoever imports it supplies the
+video files themselves.
+
+Importing back into whisker-labeler does **not** treat this folder as one
+opaque unit — see :mod:`whisker.core.manual_import`, which has the recipient
+browse to each piece (project file, dataset info file, media folder, label
+files) individually and validates each one as soon as it's picked. That's
+why ``export_info.json``/README.txt spell out the exact relative path to each
+piece: so whoever's importing can just follow them field by field.
 
 The functions here perform *only* filesystem work (read + copy + write). They
 never touch Qt and never mutate the in-memory workspace, so callers can run
@@ -440,298 +444,62 @@ def export_annotation_bundle(
 def _write_readme(bundle_dir: Path, export_info: dict) -> None:
     ds = export_info["dataset"]
     media_dir = ds["media_dir"]
+    media_field = "Video clips folder" if ds["media_kind"] == "videos" else "Frames folder"
     if ds["media_included"]:
         media_line = (
             f"  {media_dir}/            the {ds['media_kind']} "
             "(original names preserved)"
         )
+        media_import_line = f"  {media_field}:{' ' * max(1, 20 - len(media_field))}{media_dir}/"
     else:
         media_line = (
             f"  ({ds['media_kind']} NOT included — reference only; "
             f"originally at {ds['original_base_data_path']})"
         )
+        media_import_line = (
+            f"  {media_field}: NOT included in this folder — point at "
+            f"{ds['original_base_data_path']} (or wherever you've put a copy)"
+        )
+
+    pose_info = export_info["pose_labels"]
+    behavior_info = export_info["behavior_labels"]
+
     lines = [
-        "whisker-labeler annotation bundle",
-        f"Bundle format version: {export_info['bundle_format_version']}",
-        f"Created: {export_info['created_at']}",
+        "whisker-labeler exported dataset",
+        f"Exported: {export_info['created_at']}",
         "",
         f"Dataset:  {ds['name']} ({ds['type']}, {ds['num_media']} {ds['media_kind']})",
         f"Project:  {export_info['project']['name']}",
         f"Multi-arena:     {'yes' if ds.get('multi_arena') else 'no'}",
-        f"Pose labels:     {'yes' if export_info['pose_labels']['present'] else 'no'}",
-        f"Behavior labels: {'yes' if export_info['behavior_labels']['present'] else 'no'}",
+        f"Pose labels:     {'yes' if pose_info['present'] else 'no'}",
+        f"Behavior labels: {'yes' if behavior_info['present'] else 'no'}",
         "",
-        "Layout:",
-        f"  {EXPORT_INFO_FILENAME}   machine-readable description of this bundle",
-        f"  {PROJECT_DIRNAME}/           the project definition (labels schema)",
-        f"  {DATASET_DIRNAME}/           the dataset manifest",
-        f"  {POSE_LABELS_DIRNAME}/       pose label HDF5 + metadata (if any)",
-        f"  {BEHAVIOR_LABELS_DIRNAME}/   behavior label HDF5 (if any)",
+        "This folder contains (all paths below are relative to this folder):",
+        f"  {export_info['project']['file']}",
+        f"  {ds['manifest']}",
         media_line,
-        "",
-        "Import into whisker-labeler via the Data Explorer options menu ->",
-        "'Import Annotation Bundle...' and select this folder.",
     ]
+    if pose_info["present"]:
+        lines.append(f"  {pose_info['labels_h5']}")
+    if behavior_info["present"]:
+        lines.append(f"  {behavior_info['labels_h5']}")
+    lines += [
+        "",
+        "To import into whisker-labeler:",
+        "  Data Explorer -> the '...' button -> 'Import Dataset...'",
+        "  Then fill in each field by browsing INTO this folder:",
+        f"    Project file:            {export_info['project']['file']}",
+        f"    Dataset info file:       {ds['manifest']}",
+        media_import_line,
+    ]
+    if pose_info["present"]:
+        lines.append(f"    Pose labels file:        {pose_info['labels_h5']}")
+    if behavior_info["present"]:
+        lines.append(f"    Behavior labels file:    {behavior_info['labels_h5']}")
+    lines.append(
+        "  Each field is checked as soon as you pick it, so if something's "
+        "wrong you'll see exactly which piece and why."
+    )
     with open(bundle_dir / README_FILENAME, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-
-# ------------------------------------------------------------------ #
-# Import
-# ------------------------------------------------------------------ #
-
-
-def read_bundle_info(bundle_dir: Path) -> dict:
-    """Load and validate ``export_info.json`` from a bundle directory."""
-    bundle_dir = Path(bundle_dir)
-    info_path = bundle_dir / EXPORT_INFO_FILENAME
-    if not info_path.exists():
-        raise BundleError(
-            f"Not a valid annotation bundle: '{EXPORT_INFO_FILENAME}' not found "
-            f"in {bundle_dir}"
-        )
-    try:
-        with open(info_path, "r", encoding="utf-8") as f:
-            info = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        raise BundleError(f"Could not read {info_path}: {e}") from e
-
-    version = str(info.get("bundle_format_version", ""))
-    if not version:
-        raise BundleError(f"{EXPORT_INFO_FILENAME} is missing 'bundle_format_version'.")
-    if version.split(".")[0] != BUNDLE_FORMAT_VERSION.split(".")[0]:
-        raise BundleError(
-            f"Unsupported bundle format version {version} "
-            f"(this app understands {BUNDLE_FORMAT_VERSION})."
-        )
-    if "dataset" not in info or "project" not in info:
-        raise BundleError(f"{EXPORT_INFO_FILENAME} is missing required sections.")
-    return info
-
-
-@dataclass
-class BundleImportPreview:
-    info: dict
-    bundle_dir: Path
-    dataset_name: str
-    dataset_type: str
-    media_kind: str
-    media_included: bool
-    num_media: int
-    original_base_data_path: str
-    project_name: str
-    pose_present: bool
-    behavior_present: bool
-    multi_arena: bool
-    # Conflicts in the *target* workspace
-    project_exists: bool
-    dataset_exists: bool
-    pose_labels_exist: bool
-    behavior_labels_exist: bool
-
-    @property
-    def has_conflicts(self) -> bool:
-        return (
-            self.project_exists
-            or self.dataset_exists
-            or self.pose_labels_exist
-            or self.behavior_labels_exist
-        )
-
-
-def build_import_preview(workspace, bundle_dir: Path) -> BundleImportPreview:
-    """Read a bundle and detect what it would create/overwrite in ``workspace``."""
-    bundle_dir = Path(bundle_dir)
-    info = read_bundle_info(bundle_dir)
-
-    ds = info["dataset"]
-    dataset_name = ds["name"]
-    project_name = info["project"]["name"]
-    pose_present = bool(info.get("pose_labels", {}).get("present"))
-    behavior_present = bool(info.get("behavior_labels", {}).get("present"))
-
-    project_exists = workspace.projects.get(project_name) is not None
-    dataset_exists = workspace.datasets.get(dataset_name) is not None
-    pose_labels_exist = (
-        workspace.pose_labels.base_dir / dataset_name / LABELS_H5_FILENAME
-    ).exists()
-    behavior_labels_exist = (
-        workspace.behavior_labels.base_dir / dataset_name / LABELS_H5_FILENAME
-    ).exists()
-
-    return BundleImportPreview(
-        info=info,
-        bundle_dir=bundle_dir,
-        dataset_name=dataset_name,
-        dataset_type=ds.get("type", ""),
-        media_kind=ds.get("media_kind", "frames"),
-        media_included=bool(ds.get("media_included", True)),
-        num_media=int(ds.get("num_media", 0)),
-        original_base_data_path=str(ds.get("original_base_data_path", "")),
-        project_name=project_name,
-        pose_present=pose_present,
-        behavior_present=behavior_present,
-        multi_arena=bool(ds.get("multi_arena", False)),
-        project_exists=project_exists,
-        dataset_exists=dataset_exists,
-        pose_labels_exist=pose_labels_exist,
-        behavior_labels_exist=behavior_labels_exist,
-    )
-
-
-def import_annotation_bundle(
-    workspace,
-    bundle_dir: Path,
-    overwrite: bool = False,
-    media_source_dir: Optional[Path] = None,
-    progress_cb: Optional[ProgressCallback] = None,
-    cancel_cb: Optional[Callable[[], bool]] = None,
-) -> dict:
-    """Import a bundle into ``workspace`` (filesystem only).
-
-    When the bundle includes media, the frames/videos are copied into the
-    workspace and the manifest's ``base_data_path`` points at the copy. When the
-    bundle is reference-only, no media is copied and ``base_data_path`` is set to
-    ``media_source_dir`` (or the recorded original path if not provided).
-
-    Does *not* rescan the in-memory workspace — the caller should do that on the
-    GUI thread afterwards.
-    """
-
-    def _progress(msg: str, pct: int):
-        if progress_cb:
-            progress_cb(msg, pct)
-
-    def _cancelled() -> bool:
-        return bool(cancel_cb and cancel_cb())
-
-    bundle_dir = Path(bundle_dir)
-    info = read_bundle_info(bundle_dir)
-
-    ds_info = info["dataset"]
-    dataset_name = ds_info["name"]
-    project_name = info["project"]["name"]
-    media_included = bool(ds_info.get("media_included", True))
-
-    _progress("Importing project...", 0)
-
-    # 1. Project definition
-    project_installed = False
-    project_dst = workspace.projects.base_dir / f"{project_name}.json"
-    project_src = bundle_dir / info["project"]["file"]
-    if not project_dst.exists() or overwrite:
-        if project_src.exists():
-            project_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(project_src, project_dst)
-            project_installed = True
-        else:
-            raise BundleError(f"Bundle project file missing: {project_src}")
-
-    # 2. Dataset (manifest + media)
-    _progress("Preparing dataset...", 2)
-    manifest_src = bundle_dir / ds_info["manifest"]
-    if not manifest_src.exists():
-        raise BundleError(f"Bundle manifest missing: {manifest_src}")
-    with open(manifest_src, "rb") as f:
-        dataset = Dataset.from_json(f.read().decode())
-
-    dataset_dir = workspace.datasets.base_dir / dataset_name
-    if dataset_dir.exists():
-        if not overwrite:
-            raise FileExistsError(
-                f"Dataset '{dataset_name}' already exists in the workspace."
-            )
-        shutil.rmtree(dataset_dir)
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-
-    rel_paths = list(dataset.files)
-    total = len(rel_paths)
-    copied = 0
-    missing: List[str] = []
-
-    if media_included:
-        data_dir = dataset_dir / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        media_root = bundle_dir / ds_info.get("media_dir", FRAMES_DIRNAME)
-        for i, rel in enumerate(rel_paths):
-            if _cancelled():
-                raise BundleError("Import cancelled.")
-            src = media_root / rel
-            dst = data_dir / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.copy2(src, dst)
-                copied += 1
-            except (OSError, shutil.Error) as e:
-                logger.warning("Could not copy media %s: %s", src, e)
-                missing.append(rel)
-            if total and (i % 5 == 0 or i == total - 1):
-                pct = 5 + int(85 * (i + 1) / total)
-                _progress(f"Copying media ({i + 1}/{total})...", pct)
-        new_base = str(data_dir.resolve())
-    else:
-        # Reference-only: point at the media the importer supplied, or the
-        # original path recorded in the bundle.
-        if media_source_dir:
-            new_base = str(Path(media_source_dir).resolve())
-        else:
-            new_base = ds_info.get("original_base_data_path", "")
-        missing = [
-            rel for rel in rel_paths if not (Path(new_base) / rel).exists()
-        ]
-
-    # Rewrite manifest so it points at the resolved media location.
-    imported_dataset = dataset.model_copy(update={"base_data_path": new_base})
-    with open(dataset_dir / MANIFEST_FILENAME, "w", encoding="utf-8") as f:
-        f.write(imported_dataset.model_dump_json(indent=4))
-
-    # 3. Pose labels
-    pose_imported = False
-    pose_info = info.get("pose_labels", {})
-    if pose_info.get("present"):
-        _progress("Importing pose labels...", 92)
-        pose_dst_dir = workspace.pose_labels.base_dir / dataset_name
-        if pose_dst_dir.exists() and overwrite:
-            shutil.rmtree(pose_dst_dir)
-        if not pose_dst_dir.exists():
-            pose_dst_dir.mkdir(parents=True, exist_ok=True)
-            h5_src = bundle_dir / pose_info["labels_h5"]
-            if h5_src.exists():
-                shutil.copy2(h5_src, pose_dst_dir / LABELS_H5_FILENAME)
-                pose_imported = True
-            meta_rel = pose_info.get("metadata")
-            if meta_rel and (bundle_dir / meta_rel).exists():
-                shutil.copy2(
-                    bundle_dir / meta_rel, pose_dst_dir / POSE_METADATA_FILENAME
-                )
-
-    # 4. Behavior labels
-    behavior_imported = False
-    bc_info = info.get("behavior_labels", {})
-    if bc_info.get("present"):
-        _progress("Importing behavior labels...", 96)
-        bc_dst_dir = workspace.behavior_labels.base_dir / dataset_name
-        if bc_dst_dir.exists() and overwrite:
-            shutil.rmtree(bc_dst_dir)
-        if not bc_dst_dir.exists():
-            bc_dst_dir.mkdir(parents=True, exist_ok=True)
-            h5_src = bundle_dir / bc_info["labels_h5"]
-            if h5_src.exists():
-                shutil.copy2(h5_src, bc_dst_dir / LABELS_H5_FILENAME)
-                behavior_imported = True
-
-    _progress("Import complete.", 100)
-
-    return {
-        "dataset_name": dataset_name,
-        "project_name": project_name,
-        "media_kind": ds_info.get("media_kind", "frames"),
-        "media_included": media_included,
-        "num_media": total,
-        "num_media_copied": copied,
-        "num_missing": len(missing),
-        "missing": missing,
-        "project_installed": project_installed,
-        "pose_imported": pose_imported,
-        "behavior_imported": behavior_imported,
-    }
