@@ -7,6 +7,7 @@ one is checked the moment it's picked, with a specific plain-English reason
 if it's wrong. Nothing is copied until every required piece has checked out.
 """
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QCheckBox,
     QFrame,
+    QMessageBox,
 )
 
 from whisker.core import manual_import as mi
@@ -67,6 +69,18 @@ class ImportDatasetDialog(QDialog):
                 "it, so you'll see exactly what's wrong instead of a generic error."
             )
         )
+
+        # Shortcut for the common case: the pieces came from an "Export..."
+        # bundle folder. Point at that one folder and every field below is
+        # filled in from its export_info.json — then still individually checked.
+        autofill_row = QWidget()
+        autofill_h = QHBoxLayout(autofill_row)
+        autofill_h.setContentsMargins(0, 0, 0, 0)
+        self.autofill_btn = QPushButton("Auto-fill from exported bundle folder...")
+        self.autofill_btn.clicked.connect(self._on_autofill_from_bundle)
+        autofill_h.addWidget(self.autofill_btn)
+        autofill_h.addStretch()
+        main_layout.addWidget(autofill_row)
 
         # --- Required pieces ---
         required_group = QGroupBox("Required")
@@ -273,6 +287,86 @@ class ImportDatasetDialog(QDialog):
 
     def _on_clear_behavior(self, edit: QLineEdit):
         edit.clear()
+
+    # -- auto-fill from an exported bundle ------------------------------
+
+    def _on_autofill_from_bundle(self):
+        """Pick an "Export..." bundle folder and populate every field below
+        from its ``export_info.json``. Each field is still validated afterwards
+        by :meth:`_revalidate`, so a bad/old bundle surfaces per-field."""
+        start = self.project_edit.text().strip() or str(Path.home())
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Exported Bundle Folder", start
+        )
+        if not folder:
+            return
+
+        bundle_dir = Path(folder)
+        info_path = bundle_dir / "export_info.json"
+        if not info_path.is_file():
+            QMessageBox.warning(
+                self,
+                "Not a bundle folder",
+                f"No 'export_info.json' in:\n{bundle_dir}\n\n"
+                "Pick the folder that an \"Export...\" produced (it contains "
+                "export_info.json and README.txt), or fill in each field below "
+                "by hand.",
+            )
+            return
+
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            QMessageBox.warning(
+                self,
+                "Could not read bundle",
+                f"'{info_path}' could not be read:\n{e}",
+            )
+            return
+
+        def _resolve(rel: Optional[str]) -> str:
+            return str(bundle_dir / rel) if rel else ""
+
+        project = info.get("project", {}) or {}
+        dataset = info.get("dataset", {}) or {}
+        pose = info.get("pose_labels", {}) or {}
+        behavior = info.get("behavior_labels", {}) or {}
+
+        self.project_edit.setText(_resolve(project.get("file")))
+        self.dataset_edit.setText(_resolve(dataset.get("manifest")))
+
+        media_included = bool(dataset.get("media_included", True))
+        media_dir = dataset.get("media_dir")
+        if media_included and media_dir:
+            self.media_edit.setText(_resolve(media_dir))
+        else:
+            self.media_edit.clear()
+
+        name = dataset.get("name")
+        if name:
+            self._name_autofill_value = ""
+            self.name_edit.setText(name)
+
+        self.pose_edit.setText(
+            _resolve(pose.get("labels_h5")) if pose.get("present") else ""
+        )
+        self.behavior_edit.setText(
+            _resolve(behavior.get("labels_h5")) if behavior.get("present") else ""
+        )
+
+        self._revalidate()
+
+        if not media_included:
+            orig = dataset.get("original_base_data_path", "")
+            QMessageBox.information(
+                self,
+                "Media not in this bundle",
+                "This is a reference-only bundle — the "
+                f"{dataset.get('media_kind', 'media')} files were not copied "
+                "into it.\n\nSet the media folder to your own copy of them"
+                + (f" (originally at:\n{orig})" if orig else "")
+                + ".",
+            )
 
     def _on_name_edited(self):
         if self.name_edit.text() != self._name_autofill_value:

@@ -97,6 +97,16 @@ class ExportAnnotationsDialog(QDialog):
         self.contents_tree.setRootIsDecorated(False)
         self.contents_tree.setMinimumHeight(int(170 * dpi_scale))
         contents_layout.addWidget(self.contents_tree)
+
+        # Warns (does not block) when the chosen project's body parts don't line
+        # up with what the pose labels were actually made with — the usual sign
+        # the wrong project is selected in the combo above.
+        self.project_mismatch_label = QLabel("")
+        self.project_mismatch_label.setWordWrap(True)
+        self.project_mismatch_label.setStyleSheet("color: #e67e22;")
+        self.project_mismatch_label.setVisible(False)
+        contents_layout.addWidget(self.project_mismatch_label)
+
         main_layout.addWidget(contents_group)
 
         # --- Include video files (video datasets only) ---
@@ -177,6 +187,7 @@ class ExportAnnotationsDialog(QDialog):
         """Rebuild the export plan for the currently selected project and refresh
         the contents preview + default bundle name."""
         self.contents_tree.clear()
+        self.project_mismatch_label.setVisible(False)
         self._plan = None
 
         if not self.project_combo.isEnabled():
@@ -231,9 +242,31 @@ class ExportAnnotationsDialog(QDialog):
         self._add_row("export_info.json", "bundle description")
         self.contents_tree.resizeColumnToContents(0)
 
+        self._refresh_project_mismatch(plan)
+
         if not self.name_edit.text().strip():
             self.name_edit.setText(plan.default_bundle_name())
         self._update_full_path()
+
+    def _refresh_project_mismatch(self, plan: "bundle.BundleExportPlan"):
+        """Show an advisory note if the selected project's body parts don't
+        match the ones recorded in the pose label metadata."""
+        self.project_mismatch_label.setVisible(False)
+        if not plan.pose.present or not plan.pose.body_parts:
+            return
+        label_parts = [p for p in plan.pose.body_parts if p]
+        project_parts = set(plan.project.body_parts)
+        unknown = [p for p in label_parts if p not in project_parts]
+        if not unknown:
+            return
+        sample = ", ".join(unknown[:5])
+        more = f" (+{len(unknown) - 5} more)" if len(unknown) > 5 else ""
+        self.project_mismatch_label.setText(
+            f"⚠ The pose labels use body part(s) not in project "
+            f"'{plan.project.name}': {sample}{more}. Double-check you've picked "
+            "the project these labels were made under."
+        )
+        self.project_mismatch_label.setVisible(True)
 
     def _on_browse(self):
         start = self.dest_edit.text().strip() or str(Path.home())

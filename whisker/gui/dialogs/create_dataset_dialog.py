@@ -77,11 +77,18 @@ class CreateDatasetDialog(QDialog):
         video_files: List[Path] = []
         image_files: List[Path] = []
 
-        # Recursively find all supported files
-        for ext in VIDEO_EXTENSIONS:
-            video_files.extend(folder_path.rglob(f"*{ext}"))
-        for ext in IMAGE_EXTENSIONS:
-            image_files.extend(folder_path.rglob(f"*{ext}"))
+        # Recursively find all supported files. One walk, extension matched
+        # case-insensitively so ".PNG" / ".MP4" etc. are still recognised.
+        video_exts = {e.lower() for e in VIDEO_EXTENSIONS}
+        image_exts = {e.lower() for e in IMAGE_EXTENSIONS}
+        for path in folder_path.rglob("*"):
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if suffix in video_exts:
+                video_files.append(path)
+            elif suffix in image_exts:
+                image_files.append(path)
 
         # Determine dataset type based on found files
         has_videos = bool(video_files)

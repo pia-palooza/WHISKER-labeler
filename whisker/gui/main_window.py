@@ -241,21 +241,35 @@ class MainWindow(QMainWindow):
         
         # Export Submenu
         export_menu = QMenu("Export", self)
+        export_menu.setToolTipsVisible(True)
         file_menu.addMenu(export_menu)
-        
+
         self._export_labels_action = QAction("Export Annotations...", self)
+        self._export_labels_action.setToolTip(
+            "Select a dataset in the Data Explorer first — Export Annotations "
+            "bundles that dataset's labels."
+        )
         self._export_labels_action.triggered.connect(self._export_annotations)
         export_menu.addAction(self._export_labels_action)
-        
+
         self._export_charts_action = QAction("Export Charts (.png)...", self)
+        self._export_charts_action.setToolTip(
+            "Needs a selected dataset and an active model run."
+        )
         self._export_charts_action.triggered.connect(self._export_behavior_charts)
         export_menu.addAction(self._export_charts_action)
-        
+
         self._export_jitter_action = QAction("Export Jitter Analysis (.png)...", self)
+        self._export_jitter_action.setToolTip(
+            "Needs a selected dataset and an active model run."
+        )
         self._export_jitter_action.triggered.connect(self._export_jitter_analysis)
         export_menu.addAction(self._export_jitter_action)
-        
+
         self._export_bouts_action = QAction("Export Bouts (.json)...", self)
+        self._export_bouts_action.setToolTip(
+            "Needs a selected dataset and an active model run."
+        )
         self._export_bouts_action.triggered.connect(self._export_bouts)
         export_menu.addAction(self._export_bouts_action)
         
