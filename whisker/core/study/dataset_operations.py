@@ -7,6 +7,23 @@ import shutil
 from .dataset import Dataset, DatasetType, GLOB_EXTENSIONS_PER_DATASET_TYPE, MultiArenaConfig
 from ..base_operation_helper import BaseOperationHelper
 
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Link src into dst, preferring a symlink but falling back to a hard
+    link or a full copy when the OS denies symlink privileges (e.g. Windows
+    without Developer Mode or admin rights)."""
+    try:
+        os.symlink(src, dst)
+        return
+    except OSError:
+        pass
+    try:
+        os.link(src, dst)
+        return
+    except OSError:
+        pass
+    shutil.copy2(src, dst)
+
 class DatasetOperations(BaseOperationHelper):
     def __init__(self, base_dir: Path):
         super().__init__(base_dir)
@@ -111,9 +128,9 @@ class DatasetOperations(BaseOperationHelper):
 
             if not dst_link.exists():
                 try:
-                    os.symlink(src_path, dst_link)
+                    _link_or_copy(src_path, dst_link)
                 except OSError as e:
-                    logging.warning(f"Failed to create symlink for {src_path}: {e}")
+                    logging.warning(f"Failed to link {src_path}: {e}")
 
         # 2b. Remove old symlinks
         for rel_path in removed_files:
@@ -162,7 +179,7 @@ class DatasetOperations(BaseOperationHelper):
         for file in files:
             file_path = dataset_data_dir / file
             link_path = dataset_symbolic_link_dir / file
-            os.symlink(file_path, link_path)
+            _link_or_copy(file_path, link_path)
 
         new_dataset = Dataset(
             name=dataset_name,
@@ -208,9 +225,9 @@ class DatasetOperations(BaseOperationHelper):
                 os.makedirs(dst_link.parent, exist_ok=True)
             if not dst_link.exists():
                 try:
-                    os.symlink(src_path, dst_link)
+                    _link_or_copy(src_path, dst_link)
                 except OSError as e:
-                    logging.warning(f"Failed to create symlink for {src_path}: {e}")
+                    logging.warning(f"Failed to link {src_path}: {e}")
 
         new_dataset = Dataset(
             name=dataset_name,
@@ -269,9 +286,9 @@ class DatasetOperations(BaseOperationHelper):
                 os.makedirs(dst_link.parent, exist_ok=True)
             if not dst_link.exists():
                 try:
-                    os.symlink(src_path, dst_link)
+                    _link_or_copy(src_path, dst_link)
                 except OSError as e:
-                    logging.warning(f"Failed to create symlink for {src_path}: {e}")
+                    logging.warning(f"Failed to link {src_path}: {e}")
 
         updated = existing.model_copy(update={
             "files": files,
