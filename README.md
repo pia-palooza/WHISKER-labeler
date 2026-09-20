@@ -227,6 +227,27 @@ you tick what you want: **project**, **videos/frames**, **pose labels**, **behav
   existing labels are backed up while this runs and restored if it fails.
 - Labels that can't be combined (different body parts or identities) are never merged.
 
+### Several datasets in one package — File → Export → Export Several Datasets…
+
+Tick any number of datasets in the table; for each, choose the project it was labeled under
+(guessed from its labels) and whether to copy its **videos/frames**, **pose labels** and
+**behavior labels**. The result is one folder, `compilation_info.json` and `README.txt` at the
+top and a complete standard export per dataset inside — the same format a single-dataset export
+produces, so each inner folder also imports on its own, and full WHISKER reads them the same way.
+If the export fails or is cancelled, the partly written folder is removed.
+
+To import one, pick the compilation folder in **File → Import…** and click **Choose datasets…**.
+A table lists every dataset with a checkbox for its videos/frames, pose labels and behavior labels:
+
+- Datasets you already have start with their videos/frames unticked, so a re-import brings in
+  just the labels for the dataset of the same name. Ticking one anyway suggests a free name.
+- Where labels would land on existing labels, one choice below the table decides:
+  **combine keeping yours**, **combine using the imported ones**, or **replace yours**.
+- The *Notes* column reports label mismatches as you tick (e.g. "7/9 frames match, 2 skipped"),
+  and asks you to locate any videos/frames that weren't copied into the package (double-click).
+- Each project is installed once even if several datasets share it, and one dataset failing
+  never stops the others — the summary lists what was imported and what wasn't.
+
 *Pick pieces manually…* (bottom of the Import dialog) is for files that didn't come from
 Export: choose the project file, dataset info file, media folder and label files one by one.
 

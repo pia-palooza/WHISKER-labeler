@@ -254,6 +254,11 @@ class MainWindow(QMainWindow):
         self._export_labels_action.triggered.connect(self._export_annotations)
         export_menu.addAction(self._export_labels_action)
         
+        self._export_compilation_action = QAction("Export Several Datasets...", self)
+        self._export_compilation_action.setToolTip("Put several datasets, with their labels, into one package")
+        self._export_compilation_action.triggered.connect(self._export_compilation)
+        export_menu.addAction(self._export_compilation_action)
+
         self._export_charts_action = QAction("Export Charts (.png)...", self)
         self._export_charts_action.triggered.connect(self._export_behavior_charts)
         export_menu.addAction(self._export_charts_action)
@@ -795,6 +800,7 @@ class MainWindow(QMainWindow):
         
         has_any_dataset = has_workspace and bool(self._workspace.datasets.keys())
         self._export_labels_action.setEnabled(has_any_dataset)
+        self._export_compilation_action.setEnabled(has_any_dataset)
         self._export_charts_action.setEnabled(has_workspace and has_dataset and has_model_run)
         self._export_jitter_action.setEnabled(has_workspace and has_dataset and has_model_run)
         self._export_bouts_action.setEnabled(has_workspace and has_dataset and has_model_run)
@@ -849,6 +855,11 @@ class MainWindow(QMainWindow):
             dataset_name = self._choose_dataset_to_export()
         if dataset_name and hasattr(self.data_explorer, "action_handler"):
             self.data_explorer.action_handler._export_annotations(dataset_name)
+
+    def _export_compilation(self):
+        dataset_name, _ = self._get_active_dataset_and_video()
+        if hasattr(self.data_explorer, "action_handler"):
+            self.data_explorer.action_handler.show_export_compilation_dialog(preselect=dataset_name)
 
     def _export_behavior_charts(self):
         dataset_name, _ = self._get_active_dataset_and_video()

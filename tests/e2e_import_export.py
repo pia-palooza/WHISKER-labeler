@@ -2,8 +2,9 @@
 
     python tests/e2e_import_export.py
 
-Drives File > Import (full import, then a labels-only re-import that merges) and
-File > Export by clicking through the actual dialogs, with the real worker thread and refresh.
+Drives File > Import (full import, then a labels-only re-import that merges), File > Export, and a
+multi-dataset compilation exported from one workspace and imported into another,
+by clicking through the actual dialogs, with the real worker thread and refresh.
 
 SAFETY: the app normally opens the workspace saved in your user settings (your real one), and
 QSettings("org", "app") ignores setDefaultFormat. So QSettings is replaced, before any whisker
@@ -245,6 +246,78 @@ print("   message shown:\n      " + [m for m in messages if m[0] == "information
 out = out_parent / "openfield_labels"
 check((out / "export_info.json").exists() and not (out / "frames").exists(), "labels-only export written (no frames folder)")
 check(bi.inspect_bundle(out).pose.ok, "...and it re-imports cleanly")
+
+# ---- 4. COMPILATION: export several datasets from this workspace ...
+check(mw._export_compilation_action.isEnabled(), "Export Several Datasets... is enabled")
+check(mw._export_compilation_action.text() == "Export Several Datasets...", "Export Several Datasets... is in the menu")
+extra_files = frame_names(4)
+b.add_dataset(ws, "extra", extra_files)
+b.add_pose_labels(ws, "extra", extra_files[:3])
+ws.scan_datasets(); ws.scan_labels()
+messages.clear()
+share_parent = tmp / "shared"
+share_parent.mkdir()
+
+
+def drive_comp_export():
+    e = modal()
+    print("   dialog:", type(e).__name__, "| datasets listed:", [r["name"] for r in e._rows])
+    e._tick_all(True)
+    e.dest_edit.setText(str(share_parent))
+    e.name_edit.setText("labshare")
+    e.ok_btn.click()
+
+
+QTimer.singleShot(400, drive_comp_export)
+mw._export_compilation_action.trigger()
+wait_for(lambda: any(m[0] == "information" for m in messages), what="compilation-export message")
+print("   message shown:\n      " + [m for m in messages if m[0] == "information"][-1][2].replace("\n", "\n      "))
+shared = share_parent / "labshare"
+from whisker.core import compilation as comp
+check((shared / "compilation_info.json").exists() and (shared / "openfield" / "export_info.json").exists()
+      and (shared / "extra" / "export_info.json").exists(), "compilation folder written with one export per dataset")
+check(bi.inspect_bundle(shared / "extra").pose.ok, "each inner folder is a normal export that imports on its own")
+
+# ---- 5. ... and import it into a second, empty workspace (real File > Import path)
+ws2_dir = tmp / "second_workspace"
+ws2_dir.mkdir()
+mw.set_workspace(ws2_dir)
+pump(0.3)
+ws2 = mw._workspace
+check(Path(ws2.base_dir).resolve() == ws2_dir.resolve() and tmp in Path(ws2.base_dir).resolve().parents,
+      "app switched to the second temp workspace (guard)")
+if not (Path(ws2.base_dir).resolve() == ws2_dir.resolve()):
+    print("!! wrong workspace, aborting")
+    os._exit(4)
+messages.clear()
+
+
+def choose_datasets_step():
+    c = modal()
+    print("   compilation dialog:", type(c).__name__, "| rows:", [r["entry"].name for r in c._rows],
+          "| import enabled:", c.import_btn.isEnabled())
+    c.import_btn.click()
+
+
+def pick_compilation_step():
+    d = modal()
+    d.set_path(str(shared))
+    print("   import dialog says:", d.location_label.text().split(" \u2014 ")[0], "| button:", d.import_btn.text())
+    QTimer.singleShot(500, choose_datasets_step)
+    d.import_btn.click()
+
+
+QTimer.singleShot(400, pick_compilation_step)
+mw._import_bundle_action.trigger()
+wait_for(lambda: any(m[0] == "information" for m in messages), what="compilation-import message")
+text = [m for m in messages if m[0] == "information"][-1][2]
+print("   message shown:\n      " + text.replace("\n", "\n      "))
+pump(0.5)
+check(sorted(ws2.datasets.keys()) == ["extra", "openfield"], "both datasets arrived in the second workspace")
+check(sorted(ws2.projects.keys()) == ["myproject", "proj"] or "proj" in ws2.projects.keys(), "their project(s) arrived")
+check(ws2.pose_labels.has_pose_labels("extra") and ws2.pose_labels.has_pose_labels("openfield"), "pose labels arrived for both")
+check("2 of 2 dataset(s) imported" in text, "message reports 2 of 2 datasets")
+check(not [m for m in messages if m[0] in ("warning", "critical")], "no warnings or errors shown")
 
 # ---- the real workspace must be exactly as it was ---------------------------------------------
 check(snapshot() == REAL_BEFORE, "REAL workspace untouched (datasets/projects/workflows identical)")

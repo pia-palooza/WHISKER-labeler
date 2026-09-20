@@ -29,8 +29,18 @@ from whisker.gui.dialogs import (
     ImportDatasetDialog,
     ImportBundleDialog,
     ADVANCED_RESULT,
+    COMPILATION_RESULT,
+    ImportCompilationDialog,
+    ExportCompilationDialog,
 )
-from whisker.core.workers.bundle_workers import ExportBundleJob, ImportBundleJob
+from whisker.core import compilation
+from whisker.core.bundle import BundleError
+from whisker.core.workers.bundle_workers import (
+    ExportBundleJob,
+    ImportBundleJob,
+    ExportCompilationJob,
+    ImportCompilationJob,
+)
 from whisker.core.workers.manual_import_workers import ImportComponentsJob
 from whisker.gui.signals import MessageBus
 from whisker.gui.worker_wrapper import Worker
@@ -399,6 +409,9 @@ class ActionHandler(QObject):
         if result == ADVANCED_RESULT:
             self._show_manual_import_dialog()
             return
+        if result == COMPILATION_RESULT:
+            self._show_compilation_import(dialog.compilation_root)
+            return
         if result != QDialog.DialogCode.Accepted or dialog.contents is None:
             return
 
@@ -407,6 +420,91 @@ class ActionHandler(QObject):
             "Importing",
             self._on_bundle_imported,
             "Import Failed",
+        )
+
+    def _show_compilation_import(self, root):
+        """Several datasets in one package: choose which, and which parts of each."""
+        dialog = ImportCompilationDialog(self._workspace, root, self.parent_widget)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.contents is None:
+            return
+        self._run_bundle_job(
+            ImportCompilationJob(self._workspace, dialog.contents, dialog.selection),
+            "Importing",
+            self._on_compilation_imported,
+            "Import Failed",
+        )
+
+    def _on_compilation_imported(self, result: dict):
+        self._refresh_after_import()
+        QMessageBox.information(self.parent_widget, "Import Complete", self._describe_compilation_import(result))
+
+    @staticmethod
+    def _describe_compilation_import(result: dict) -> str:
+        """Plain-English summary of a compilation import: projects, then each dataset."""
+        datasets = result.get("datasets", [])
+        done = [d for d in datasets if not d["error"]]
+        lines = [f"{len(done)} of {len(datasets)} dataset(s) imported."]
+        added = [p["name"] for p in result.get("projects", []) if p["installed"]]
+        kept = [p["name"] for p in result.get("projects", []) if not p["installed"]]
+        if added:
+            lines.append("Projects added: " + ", ".join(added) + ".")
+        if kept:
+            lines.append("Projects left as they were: " + ", ".join(kept) + ".")
+        for d in datasets:
+            if d["error"]:
+                lines.append(f"\u2717 {d['name']}: {d['error']}")
+                continue
+            lines.append(f"\u2022 {d['name']}")
+            lines.extend("    " + line for line in ActionHandler._describe_import(d["result"]).splitlines() if line)
+        if result.get("cancelled"):
+            lines.append("Import cancelled; anything not listed above was not imported.")
+        return "\n".join(lines)
+
+    def show_export_compilation_dialog(self, preselect: Optional[str] = None):
+        """Export several datasets into one package."""
+        if not self._workspace:
+            return
+        if not self._workspace.datasets.keys():
+            QMessageBox.information(self.parent_widget, "Export", "This workspace has no datasets to export yet.")
+            return
+        default_project = self._active_project.name if self._active_project else None
+        dialog = ExportCompilationDialog(self._workspace, default_project, preselect, self.parent_widget)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        items, dest, name = dialog.items(), dialog.destination_dir, dialog.name
+        try:
+            plans = compilation.build_plans(self._workspace, items)
+        except BundleError as e:
+            QMessageBox.warning(self.parent_widget, "Can't Export", str(e))
+            return
+        overwrite = False
+        if (dest / name).exists():
+            reply = QMessageBox.question(
+                self.parent_widget,
+                "Overwrite Existing Folder?",
+                f"'{dest / name}' already exists.\n\nReplace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            overwrite = True
+
+        def _on_finished(result: dict):
+            text = f"Exported {result['num_datasets']} dataset(s) to:\n{result['compilation_dir']}\n\n"
+            if result["num_media"]:
+                text += f"Media copied: {result['num_media_copied']}/{result['num_media']}"
+                if result["num_missing"]:
+                    text += f"\nMissing or skipped: {result['num_missing']}"
+            else:
+                text += "No media were copied (labels and references only)."
+            QMessageBox.information(self.parent_widget, "Export Complete", text)
+
+        self._run_bundle_job(
+            ExportCompilationJob(items, plans, dest, name, overwrite),
+            "Exporting Datasets",
+            _on_finished,
+            "Export Failed",
         )
 
     def _refresh_after_import(self):

@@ -67,6 +67,8 @@ GENERATOR = "whisker-labeler"
 
 EXPORT_INFO_FILENAME = "export_info.json"
 README_FILENAME = "README.txt"
+# A compilation is a folder of several exports (see whisker.core.compilation); this marks it.
+COMPILATION_INFO_FILENAME = "compilation_info.json"
 
 PROJECT_DIRNAME = "project"
 DATASET_DIRNAME = "dataset"

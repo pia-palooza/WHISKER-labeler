@@ -347,23 +347,28 @@ def install_dataset(
     missing: List[str] = []
     lo, hi = progress_range
     media_dir = Path(media_dir)
-    for i, rel in enumerate(rel_paths):
-        if cancel_cb and cancel_cb():
-            raise ManualImportError("Import cancelled.")
-        src = media_dir / rel
-        dst = data_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(src, dst)
-            copied += 1
-        except (OSError, shutil.Error) as e:
-            logger.warning("Could not copy media %s: %s", src, e)
-            missing.append(rel)
-        if progress_cb and total and (i % 5 == 0 or i == total - 1):
-            progress_cb(f"Copying media ({i + 1}/{total})...", lo + int((hi - lo) * (i + 1) / total))
+    try:
+        for i, rel in enumerate(rel_paths):
+            if cancel_cb and cancel_cb():
+                raise ManualImportError("Import cancelled.")
+            src = media_dir / rel
+            dst = data_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src, dst)
+                copied += 1
+            except (OSError, shutil.Error) as e:
+                logger.warning("Could not copy media %s: %s", src, e)
+                missing.append(rel)
+            if progress_cb and total and (i % 5 == 0 or i == total - 1):
+                progress_cb(f"Copying media ({i + 1}/{total})...", lo + int((hi - lo) * (i + 1) / total))
 
-    imported = dataset.model_copy(update={"name": dataset_name, "base_data_path": str(data_dir.resolve())})
-    (dataset_dir / "manifest.json").write_text(imported.model_dump_json(indent=4), encoding="utf-8")
+        imported = dataset.model_copy(update={"name": dataset_name, "base_data_path": str(data_dir.resolve())})
+        (dataset_dir / "manifest.json").write_text(imported.model_dump_json(indent=4), encoding="utf-8")
+    except BaseException:
+        # Cancelled or failed part-way: don't leave a half-copied dataset in the workspace.
+        shutil.rmtree(dataset_dir, ignore_errors=True)
+        raise
     return copied, missing
 
 

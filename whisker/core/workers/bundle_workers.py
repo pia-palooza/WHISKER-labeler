@@ -10,7 +10,7 @@ in-memory workspace; the caller rescans the workspace afterwards.
 from pathlib import Path
 
 from whisker.base.job import BaseJob
-from whisker.core import bundle, bundle_import
+from whisker.core import bundle, bundle_import, compilation
 
 
 class ExportBundleJob(BaseJob):
@@ -42,6 +42,45 @@ class ExportBundleJob(BaseJob):
             include_project=self.include_project,
             include_pose=self.include_pose,
             include_behavior=self.include_behavior,
+            progress_cb=self.report_progress,
+            cancel_cb=lambda: self.is_cancelled,
+        )
+
+
+class ExportCompilationJob(BaseJob):
+    def __init__(self, items, plans, dest_dir: Path, name: str, overwrite: bool = False):
+        super().__init__()
+        self.items = items
+        self.plans = plans
+        self.dest_dir = Path(dest_dir)
+        self.name = name
+        self.overwrite = overwrite
+
+    def run(self) -> dict:
+        return compilation.export_compilation(
+            self.items,
+            self.plans,
+            self.dest_dir,
+            self.name,
+            overwrite=self.overwrite,
+            progress_cb=self.report_progress,
+            cancel_cb=lambda: self.is_cancelled,
+        )
+
+
+class ImportCompilationJob(BaseJob):
+    def __init__(self, workspace, contents: "compilation.CompilationContents",
+                 selection: "compilation.CompilationSelection"):
+        super().__init__()
+        self.workspace = workspace
+        self.contents = contents
+        self.selection = selection
+
+    def run(self) -> dict:
+        return compilation.import_compilation(
+            self.workspace,
+            self.contents,
+            self.selection,
             progress_cb=self.report_progress,
             cancel_cb=lambda: self.is_cancelled,
         )

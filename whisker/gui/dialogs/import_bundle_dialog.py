@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from whisker.core import bundle_import as bi
+from whisker.core import compilation as comp
 from whisker.core.workspace import Workspace
 from whisker.gui.dialogs.attach_labels_dialog import AttachLabelsDialog
 
@@ -37,7 +38,8 @@ _BAD = "color: #c0392b;"
 _WARN = "color: #e67e22;"
 _MUTED = "color: gray;"
 
-ADVANCED_RESULT = 2   # dialog.exec() value when the user chose "Pick pieces manually"
+ADVANCED_RESULT = 2       # dialog.exec() value when the user chose "Pick pieces manually"
+COMPILATION_RESULT = 3    # ...or picked a compilation (several datasets); see ``compilation_root``
 
 
 class ImportBundleDialog(QDialog):
@@ -48,6 +50,7 @@ class ImportBundleDialog(QDialog):
         self._workspace = workspace
         self.contents: Optional[bi.BundleContents] = None
         self.selection: Optional[bi.ImportSelection] = None
+        self.compilation_root: Optional[Path] = None
         self._loading = False
 
         self.setWindowTitle("Import")
@@ -214,7 +217,8 @@ class ImportBundleDialog(QDialog):
         self.location_label.setStyleSheet(style)
 
     def _reset(self):
-        self.contents = self.selection = None
+        self.contents = self.selection = self.compilation_root = None
+        self.import_btn.setText("Import")
         self.parts_box.setVisible(False)
         self.details_box.setVisible(False)
         self.candidate_combo.setVisible(False)
@@ -232,7 +236,10 @@ class ImportBundleDialog(QDialog):
             loc = bi.locate_bundle(text)
         finally:
             QApplication.restoreOverrideCursor()
-        if loc.found:
+        if loc.is_compilation:
+            self.candidate_combo.setVisible(False)
+            self._show_compilation(loc.root, loc.message)
+        elif loc.found:
             self.candidate_combo.setVisible(False)
             self._load(loc.root, loc.message)
         elif loc.candidates:
@@ -255,8 +262,22 @@ class ImportBundleDialog(QDialog):
 
     def _on_candidate_chosen(self, index: int):
         root = self.candidate_combo.itemData(index)
-        if root:
+        if not root:
+            return
+        if bi.kind_of(Path(root)) == "compilation":
+            self._show_compilation(Path(root), "")
+        else:
             self._load(Path(root), "")
+
+    def _show_compilation(self, root: Path, note: str):
+        """A compilation holds several datasets; the next step is choosing among them."""
+        self._reset()
+        self.compilation_root = root
+        name, count = comp.peek_compilation(root)
+        summary = note or f"Found the compilation '{name or root.name}'."
+        self._set_status(f"{summary} It holds {count} dataset(s) \u2014 click Choose datasets to pick what to import.", _OK)
+        self.import_btn.setText("Choose datasets...")
+        self.import_btn.setEnabled(True)
 
     # ------------------------------------------------------------ loading
 
@@ -403,6 +424,9 @@ class ImportBundleDialog(QDialog):
     # ------------------------------------------------------------ finishing
 
     def _on_import_clicked(self):
+        if self.compilation_root is not None:
+            self.done(COMPILATION_RESULT)
+            return
         sel = self._sync_selection()
         if sel.labels_need_target:
             dialog = AttachLabelsDialog(self._workspace, self.contents, sel, self)

@@ -63,19 +63,35 @@ class BundleImportError(Exception):
 # --------------------------------------------------------------------------- #
 
 
+def kind_of(folder: Path) -> str:
+    """'bundle' for a single export, 'compilation' for a folder of several."""
+    if (folder / fmt.EXPORT_INFO_FILENAME).is_file():
+        return "bundle"
+    if (folder / fmt.COMPILATION_INFO_FILENAME).is_file():
+        return "compilation"
+    return ""
+
+
 @dataclass
 class BundleLocation:
-    root: Optional[Path] = None          # the export folder, when exactly one was found
-    candidates: List[Path] = field(default_factory=list)   # every export found
+    root: Optional[Path] = None          # the export/compilation folder, when exactly one was found
+    candidates: List[Path] = field(default_factory=list)   # every one found
     message: str = ""                    # plain-English explanation to show the user
+    kind: str = "bundle"                 # what ``root`` is: 'bundle' or 'compilation'
 
     @property
     def found(self) -> bool:
         return self.root is not None
 
+    @property
+    def is_compilation(self) -> bool:
+        return self.found and self.kind == "compilation"
+
 
 def _search_down(start: Path) -> Tuple[List[Path], bool]:
-    """Find export folders at or below ``start`` (breadth-first, bounded)."""
+    """Find export (or compilation) folders at or below ``start`` (breadth-first, bounded).
+    A folder that is itself an export/compilation isn't searched further, so the exports
+    inside a compilation are not listed separately."""
     found: List[Path] = []
     queue = [(start, 0)]
     scanned = 0
@@ -88,7 +104,7 @@ def _search_down(start: Path) -> Tuple[List[Path], bool]:
         try:
             with os.scandir(directory) as it:
                 for entry in it:
-                    if entry.name == fmt.EXPORT_INFO_FILENAME and entry.is_file():
+                    if entry.name in (fmt.EXPORT_INFO_FILENAME, fmt.COMPILATION_INFO_FILENAME) and entry.is_file():
                         found.append(directory)
                         subdirs = []
                         break
@@ -109,20 +125,23 @@ def locate_bundle(picked: os.PathLike | str) -> BundleLocation:
         return BundleLocation(message=f"'{p}' doesn't exist.")
 
     if p.is_file():
-        if p.name == fmt.EXPORT_INFO_FILENAME:
-            return BundleLocation(root=p.parent, candidates=[p.parent])
+        if p.name in (fmt.EXPORT_INFO_FILENAME, fmt.COMPILATION_INFO_FILENAME):
+            return BundleLocation(root=p.parent, candidates=[p.parent], kind=kind_of(p.parent))
         start = p.parent
     else:
         start = p
 
-    if (start / fmt.EXPORT_INFO_FILENAME).is_file():
-        return BundleLocation(root=start, candidates=[start])
+    here = kind_of(start)
+    if here:
+        return BundleLocation(root=start, candidates=[start], kind=here)
 
     below, hit_cap = _search_down(start)
     if len(below) == 1:
+        kind = kind_of(below[0])
+        what = "compilation" if kind == "compilation" else "export"
         return BundleLocation(
-            root=below[0], candidates=below,
-            message=f"Found the export '{below[0].name}' inside the folder you picked.",
+            root=below[0], candidates=below, kind=kind,
+            message=f"Found the {what} '{below[0].name}' inside the folder you picked.",
         )
     if len(below) > 1:
         return BundleLocation(
@@ -133,10 +152,12 @@ def locate_bundle(picked: os.PathLike | str) -> BundleLocation:
     for level, ancestor in enumerate(start.parents):
         if level >= MAX_LEVELS_UP:
             break
-        if (ancestor / fmt.EXPORT_INFO_FILENAME).is_file():
+        kind = kind_of(ancestor)          # nearest wins: a single export inside a compilation is preferred
+        if kind:
+            what = "compilation" if kind == "compilation" else "export"
             return BundleLocation(
-                root=ancestor, candidates=[ancestor],
-                message=f"You picked something inside the export '{ancestor.name}', so I used the whole export.",
+                root=ancestor, candidates=[ancestor], kind=kind,
+                message=f"You picked something inside the {what} '{ancestor.name}', so I used the whole {what}.",
             )
 
     msg = (
