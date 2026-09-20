@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-whisker-labeler = "whisker.main:main"
+whisker-labeler = "whisker.main:cli"
 
 [tool.setuptools.packages.find]
 include = ["whisker*"]

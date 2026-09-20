@@ -164,10 +164,10 @@ def main_with_profiling(args, extra_args):
             print("You can inspect this file visually with tools like 'snakeviz'.")
             print("="*80 + "\n")
 
-if __name__ == "__main__":
+def cli():
     parser = WhiskerMainArgumentParser()
     args, extra_args = parser.parse_known_args()
-    
+
     exit_code = 0
     try:
         if args.profile:
@@ -179,3 +179,7 @@ if __name__ == "__main__":
         exit_code = 1
 
     sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    cli()

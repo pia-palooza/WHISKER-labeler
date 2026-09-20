@@ -12,7 +12,12 @@ REM  On another machine, only ENV_PY below may need editing (the python.exe of
 REM  the `whisker-labeler` conda env).
 REM ============================================================================
 
-set "ENV_PY=%USERPROFILE%\AppData\Local\miniconda3\envs\whisker-labeler\python.exe"
+REM  Look for the whisker-labeler conda env python in the usual install
+REM  locations. If yours lives somewhere else, set ENV_PY directly.
+set "ENV_PY=%USERPROFILE%\miniconda3\envs\whisker-labeler\python.exe"
+if not exist "%ENV_PY%" set "ENV_PY=%USERPROFILE%\AppData\Local\miniconda3\envs\whisker-labeler\python.exe"
+if not exist "%ENV_PY%" set "ENV_PY=%USERPROFILE%\anaconda3\envs\whisker-labeler\python.exe"
+if not exist "%ENV_PY%" set "ENV_PY=%USERPROFILE%\AppData\Local\anaconda3\envs\whisker-labeler\python.exe"
 
 if not exist "%ENV_PY%" (
     echo [ERROR] Could not find the whisker-labeler environment python at:
@@ -24,6 +29,8 @@ if not exist "%ENV_PY%" (
     pause
     exit /b 1
 )
+
+cd /d "%~dp0"
 
 echo Launching WHISKER Labeler...
 "%ENV_PY%" -m whisker.main
