@@ -87,6 +87,31 @@ path to the environment's `python.exe`; if your conda isn't in the default
 Miniconda location, edit the `ENV_PY` line near the top of `launch.bat` first (or
 just use the Anaconda Prompt method above).
 
+**Desktop icon (Windows / macOS)** — once the app is installed you can add a
+WHISKER icon so it opens with a double-click, no terminal or `launch.bat` needed.
+From inside the app choose **Tools → Install Desktop Shortcut…**, pick your
+computer type, and choose where to put it — or run this from a terminal:
+
+```bash
+conda activate whisker-labeler
+whisker-labeler --install-shortcut            # Desktop + Start Menu / Applications
+whisker-labeler --install-shortcut --shortcut-location desktop   # or: menu
+```
+
+- **Windows:** creates a **WHISKER Labeler** shortcut on the Desktop and in the Start
+  Menu. To pin it to the taskbar, right-click the Start Menu entry → *Pin to taskbar*.
+- **macOS:** creates **WHISKER Labeler.app** in `~/Applications` (so it shows up in
+  Launchpad and Spotlight) plus a link on the Desktop. Drag it to the Dock to keep it there.
+- The icon opens the app with no console window. If it ever fails to start, the reason is
+  written to `whisker-startup.log` (Windows: `%LOCALAPPDATA%\WHISKER\`; macOS:
+  `~/Library/Application Support/WHISKER/`).
+- The shortcut points at the Python environment you installed it from, so run
+  *Install Desktop Shortcut* again if you move or rebuild that environment. It can only
+  be created for the OS you are on.
+- Until you choose a workspace, the icon starts in a `WHISKER Workspace` folder in your
+  home directory rather than the Desktop; use **File → Open Workspace…** to switch (the
+  app remembers your choice).
+
 On first launch the app opens a WHISKER **workspace** — by default the current
 folder, or the last workspace you used. Use **File → Open Workspace…** to point it
 at a different workspace at any time; recently used workspaces are remembered

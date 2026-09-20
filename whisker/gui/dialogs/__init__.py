@@ -5,6 +5,7 @@ from .export_annotations_dialog import ExportAnnotationsDialog
 from .import_dataset_dialog import ImportDatasetDialog
 from .warn_if_exists_dialog import WarnIfExistsDialog
 from .settings_dialog import SettingsDialog
+from .install_shortcut_dialog import InstallShortcutDialog
 
 __all__ = [
     "CreateDatasetDialog",
@@ -14,4 +15,5 @@ __all__ = [
     "ImportDatasetDialog",
     "WarnIfExistsDialog",
     "SettingsDialog",
+    "InstallShortcutDialog",
 ]

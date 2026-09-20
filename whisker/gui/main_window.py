@@ -34,7 +34,7 @@ from whisker.gui.dialogs.warn_if_exists_dialog import WarnIfExistsDialog
 from whisker.gui.tabs import BaseTab
 from whisker.third_party.server_manager import get_server_manager
 from whisker.gui.signals import MessageBus
-from whisker.gui.dialogs import SettingsDialog
+from whisker.gui.dialogs import SettingsDialog, InstallShortcutDialog
 from whisker.gui.widgets.help_window import HelpWindow
 from whisker.gui.widgets.console import ConsoleWidget
 from whisker.gui.panels.navigation_panel import NavigationPanel
@@ -404,6 +404,12 @@ class MainWindow(QMainWindow):
         self._run_jobs_action = QAction("Active Workers Monitor...", self)
         self._run_jobs_action.triggered.connect(lambda: self._switch_to_task_for_current_workflow("❖ Jobs"))
         tools_menu.addAction(self._run_jobs_action)
+
+        tools_menu.addSeparator()
+
+        install_shortcut_action = QAction("Install Desktop Shortcut...", self)
+        install_shortcut_action.triggered.connect(self._show_install_shortcut_dialog)
+        tools_menu.addAction(install_shortcut_action)
 
         # --- Help Menu ---
         help_menu = menu_bar.addMenu("Help")
@@ -1016,6 +1022,9 @@ class MainWindow(QMainWindow):
                 "No Log File Found",
                 "There is no active session log file for this workspace currently running."
             )
+
+    def _show_install_shortcut_dialog(self):
+        InstallShortcutDialog(self).exec()
 
     def _show_about_dialog(self):
         msg = (
