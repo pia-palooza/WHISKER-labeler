@@ -200,14 +200,41 @@ Move between videos with the Data Explorer.
 ## Moving data to / from full WHISKER
 
 Because the labeler shares WHISKER's workspace layout, the simplest path is to
-point it directly at a full WHISKER workspace — no conversion needed. You can
-also:
+point it directly at a full WHISKER workspace — no conversion needed. To hand a
+dataset to someone else (or move it between workspaces), use Export and Import:
 
-- **Import existing pose labels** — File → Import Pose Labels…
-- **Export** — the File → Export submenu (behavior labels, bouts, charts).
+### Export — File → Export → Export Dataset / Labels…
 
-Merge an exported `workflows/` (and `projects/`) folder into your full WHISKER
-workspace; WHISKER discovers the labels on its next scan.
+Choose the dataset (you don't need to select it first) and tick what to include: the
+**project**, the **videos/frames**, the **pose labels**, the **behavior labels**. Untick the
+videos/frames for a small labels-only export that's easy to email. The result is one folder
+with a `README.txt` describing it.
+
+### Import — File → Import… (Ctrl+Shift+O)
+
+Choose the export folder — or drag it onto the window. You can pick the folder itself, a
+folder inside it, or a folder that contains it (unzipping adds a level); the app finds it and
+explains exactly what it looked at if it can't. It then lists what the export contains, and
+you tick what you want: **project**, **videos/frames**, **pose labels**, **behavior labels**.
+
+- Anything you already have (same dataset name, identical project) starts unticked; a
+  re-import defaults to bringing in just the labels.
+- If the videos/frames weren't included, you'll be asked where they are.
+- **Labels without their dataset:** you're asked which of your datasets they belong to. The
+  labels are checked against that dataset's files and any mismatches are reported. If the
+  dataset already has labels you choose how to combine them: **combine, keeping yours where
+  both have a label**, **combine, using the imported ones**, **replace yours**, or **skip**. Your
+  existing labels are backed up while this runs and restored if it fails.
+- Labels that can't be combined (different body parts or identities) are never merged.
+
+*Pick pieces manually…* (bottom of the Import dialog) is for files that didn't come from
+Export: choose the project file, dataset info file, media folder and label files one by one.
+
+**File → Import Labels from Other Software…** brings in labels made with other tools
+(MARS, DLC, …).
+
+Or copy an exported `workflows/` (and `projects/`) folder into your full WHISKER workspace;
+WHISKER discovers the labels on its next scan.
 
 ---
 

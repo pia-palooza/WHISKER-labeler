@@ -27,8 +27,10 @@ from whisker.gui.dialogs import (
     ImportLabelsDialog,
     ExportAnnotationsDialog,
     ImportDatasetDialog,
+    ImportBundleDialog,
+    ADVANCED_RESULT,
 )
-from whisker.core.workers.bundle_workers import ExportBundleJob
+from whisker.core.workers.bundle_workers import ExportBundleJob, ImportBundleJob
 from whisker.core.workers.manual_import_workers import ImportComponentsJob
 from whisker.gui.signals import MessageBus
 from whisker.gui.worker_wrapper import Worker
@@ -296,7 +298,7 @@ class ActionHandler(QObject):
         def _on_finished(msg):
             if button_reference:
                 button_reference.setEnabled(True)
-                button_reference.setText("Import Pose Labels...")
+                button_reference.setText("Import Labels from Other Software...")
             QMessageBox.information(self.parent_widget, "Import Successful", msg)
             MessageBus.get().publish("request/workspace/datasets/refresh")
             MessageBus.get().publish("request/workspace/labels/refresh")
@@ -368,7 +370,13 @@ class ActionHandler(QObject):
 
         self._run_bundle_job(
             ExportBundleJob(
-                plan, bundle_dir, overwrite=overwrite, include_media=dialog.include_media
+                plan,
+                bundle_dir,
+                overwrite=overwrite,
+                include_media=dialog.include_media,
+                include_project=dialog.include_project,
+                include_pose=dialog.include_pose,
+                include_behavior=dialog.include_behavior,
             ),
             "Exporting Annotations",
             _on_finished,
@@ -376,16 +384,87 @@ class ActionHandler(QObject):
         )
 
     def show_import_dataset_dialog(self):
-        """Import a dataset from its individually-picked pieces (project
-        file, dataset info file, media folder, optional label files)."""
+        """Import an export with one pick: the dialog finds it, shows what's inside, and
+        imports whatever the user ticks. 'Pick pieces manually' opens the older form."""
         if not self._workspace:
             QMessageBox.warning(
                 self.parent_widget,
                 "Workspace Not Found",
-                "Please open a workspace before importing a dataset.",
+                "Please open a workspace before importing.",
             )
             return
 
+        dialog = ImportBundleDialog(self._workspace, self.parent_widget)
+        result = dialog.exec()
+        if result == ADVANCED_RESULT:
+            self._show_manual_import_dialog()
+            return
+        if result != QDialog.DialogCode.Accepted or dialog.contents is None:
+            return
+
+        self._run_bundle_job(
+            ImportBundleJob(self._workspace, dialog.contents, dialog.selection),
+            "Importing",
+            self._on_bundle_imported,
+            "Import Failed",
+        )
+
+    def _refresh_after_import(self):
+        # Rescan on the GUI thread now that files are written.
+        self._workspace.scan_projects()
+        self._workspace.scan_datasets()
+        self._workspace.scan_labels()
+        MessageBus.get().publish("request/workspace/projects/refresh")
+        MessageBus.get().publish("request/workspace/datasets/refresh")
+        MessageBus.get().publish("request/workspace/labels/refresh")
+
+    def _on_bundle_imported(self, result: dict):
+        self._refresh_after_import()
+        QMessageBox.information(self.parent_widget, "Import Complete", self._describe_import(result))
+
+    @staticmethod
+    def _describe_import(result: dict) -> str:
+        """Plain-English summary of what an import did (and didn't do)."""
+        lines = []
+        name = result.get("dataset_name")
+        if "project_name" in result:
+            lines.append(
+                f"Project '{result['project_name']}' added."
+                if result.get("project_installed") else f"Project '{result['project_name']}' left as it was."
+            )
+        if "num_media" in result:
+            lines.append(
+                f"Dataset '{name}': {result['num_media_copied']} of {result['num_media']} "
+                f"{result['media_kind']} copied."
+            )
+            if result.get("num_missing"):
+                lines.append(f"{result['num_missing']} {result['media_kind']} couldn't be found and were skipped.")
+        for kind, noun in (("pose", "pose labels"), ("behavior", "behavior labels")):
+            info = result.get(kind)
+            if not info:
+                continue
+            if not info.get("applied", True) or info.get("mode") == "kept":
+                lines.append(f"{noun.capitalize()} not imported.")
+                continue
+            count = info.get("imported_frames", info.get("imported_videos"))
+            unit = "frames" if kind == "pose" else "videos"
+            where = f" into '{name}'" if "num_media" not in result else ""
+            mode = info.get("mode", "added")
+            text = f"{noun.capitalize()} {mode}{where}"
+            if count is not None:
+                text += f": {count} {unit}"
+            if mode == "merged":
+                total = info.get("total_frames", info.get("total_videos"))
+                text += f" ({info.get('overlapping', 0)} overlapped; {total} {unit} labeled in total)"
+            lines.append(text + ".")
+            if info.get("dropped_unmatched"):
+                lines.append(f"  {info['dropped_unmatched']} label(s) that matched no file were skipped.")
+        lines.extend(result.get("notes", []))
+        return "\n".join(lines) or "Nothing was imported."
+
+    def _show_manual_import_dialog(self):
+        """The older form: pick the project file, dataset info file, media folder and
+        label files individually. For data that didn't come from Export."""
         dialog = ImportDatasetDialog(self._workspace, self.parent_widget)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

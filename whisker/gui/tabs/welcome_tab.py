@@ -26,7 +26,7 @@ class WelcomeTab(BaseTab):
     request_set_workspace = pyqtSignal()
     request_create_project = pyqtSignal()
     request_create_dataset = pyqtSignal()
-    request_import_labels = pyqtSignal()
+    request_import = pyqtSignal()
     # --- End New Signals ---
 
     def __init__(self, parent: QWidget | None = None):
@@ -67,11 +67,12 @@ class WelcomeTab(BaseTab):
         
         self.create_project_btn = QPushButton("Create New Project...")
         self.create_dataset_btn = QPushButton("Create New Dataset...")
-        self.import_labels_btn = QPushButton("Import Pose Labels...")
+        self.import_btn = QPushButton("Import...")
+        self.import_btn.setToolTip("Import an exported dataset, project, labels or media")
         
         quick_actions_layout.addWidget(self.create_project_btn)
         quick_actions_layout.addWidget(self.create_dataset_btn)
-        quick_actions_layout.addWidget(self.import_labels_btn)
+        quick_actions_layout.addWidget(self.import_btn)
         
         controls_layout.addWidget(self.quick_actions_group)
         controls_layout.addStretch()
@@ -82,7 +83,7 @@ class WelcomeTab(BaseTab):
         self.set_workspace_btn.clicked.connect(self.request_set_workspace.emit)
         self.create_project_btn.clicked.connect(self.request_create_project.emit)
         self.create_dataset_btn.clicked.connect(self.request_create_dataset.emit)
-        self.import_labels_btn.clicked.connect(self.request_import_labels.emit)
+        self.import_btn.clicked.connect(self.request_import.emit)
 
         # Initial state
         self.quick_actions_group.setEnabled(False)

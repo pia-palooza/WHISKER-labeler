@@ -2,6 +2,11 @@
 info file, a folder of frames/videos, and (optionally) label files — instead
 of a single pre-packaged bundle folder.
 
+This is the "pick each piece yourself" path (Import... -> "Pick pieces manually"),
+for files that did not come from Export. Export folders are handled by
+:mod:`whisker.core.bundle_import`, which locates the export from any pick and
+imports whichever parts are ticked; it shares the ``install_*`` writers below.
+
 The old "Import Annotation Bundle..." flow asked the user to pick *one*
 folder and tried to figure out whether it was a valid bundle. In practice
 that one-folder guess was the single biggest source of confusion: after
@@ -292,7 +297,106 @@ def check_workspace_conflicts(
 
 # ------------------------------------------------------------------ #
 # Import
+#
+# The install_* helpers each do one piece of an import. They are shared by
+# import_dataset_from_components() below (the "pick each piece" flow) and by
+# whisker.core.bundle_import (the one-pick bundle flow), so both write files
+# in exactly the same way.
 # ------------------------------------------------------------------ #
+
+
+def install_project(
+    workspace, project: Project, project_source_path: Optional[Path], overwrite: bool = False
+) -> bool:
+    """Copy a project definition into the workspace. Returns False (and leaves the
+    workspace untouched) if a project of that name exists and ``overwrite`` is off."""
+    project_dst = workspace.projects.base_dir / f"{project.name}.json"
+    if project_dst.exists() and not overwrite:
+        return False
+    project_dst.parent.mkdir(parents=True, exist_ok=True)
+    if project_source_path is not None and Path(project_source_path).exists():
+        shutil.copy2(project_source_path, project_dst)
+    else:
+        project_dst.write_text(project.model_dump_json(indent=4), encoding="utf-8")
+    return True
+
+
+def install_dataset(
+    workspace,
+    dataset: Dataset,
+    dataset_name: str,
+    media_dir: Path,
+    overwrite: bool = False,
+    progress_cb: Optional[ProgressCallback] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+    progress_range: Tuple[int, int] = (5, 85),
+) -> Tuple[int, List[str]]:
+    """Copy a dataset's media into the workspace and write its manifest under
+    ``dataset_name``. Returns ``(num_copied, missing_relative_paths)``."""
+    dataset_dir = workspace.datasets.base_dir / dataset_name
+    if dataset_dir.exists():
+        if not overwrite:
+            raise FileExistsError(f"Dataset '{dataset_name}' already exists in the workspace.")
+        shutil.rmtree(dataset_dir)
+    data_dir = dataset_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    rel_paths = list(dataset.files)
+    total = len(rel_paths)
+    copied = 0
+    missing: List[str] = []
+    lo, hi = progress_range
+    media_dir = Path(media_dir)
+    for i, rel in enumerate(rel_paths):
+        if cancel_cb and cancel_cb():
+            raise ManualImportError("Import cancelled.")
+        src = media_dir / rel
+        dst = data_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src, dst)
+            copied += 1
+        except (OSError, shutil.Error) as e:
+            logger.warning("Could not copy media %s: %s", src, e)
+            missing.append(rel)
+        if progress_cb and total and (i % 5 == 0 or i == total - 1):
+            progress_cb(f"Copying media ({i + 1}/{total})...", lo + int((hi - lo) * (i + 1) / total))
+
+    imported = dataset.model_copy(update={"name": dataset_name, "base_data_path": str(data_dir.resolve())})
+    (dataset_dir / "manifest.json").write_text(imported.model_dump_json(indent=4), encoding="utf-8")
+    return copied, missing
+
+
+def install_pose_labels(
+    workspace, dataset_name: str, pose_labels_path: Path, overwrite: bool = False
+) -> bool:
+    """Install a pose ``labels.h5`` for ``dataset_name``. The file is re-written
+    through the workspace so its ``metadata.json`` carries the *new* dataset name and
+    an up-to-date list of labeled frames. Returns False if labels already exist and
+    ``overwrite`` is off."""
+    dst_dir = workspace.pose_labels.base_dir / dataset_name
+    if dst_dir.exists():
+        if not overwrite:
+            return False
+        shutil.rmtree(dst_dir)
+    pose = PoseDataset.from_file(Path(pose_labels_path))
+    workspace.pose_labels.write_poses_file(dataset_name, pose, dst_dir / LABELS_H5_FILENAME)
+    return True
+
+
+def install_behavior_labels(
+    workspace, dataset_name: str, behavior_labels_path: Path, overwrite: bool = False
+) -> bool:
+    """Install a behavior ``labels.h5`` for ``dataset_name``. Returns False if labels
+    already exist and ``overwrite`` is off."""
+    dst_dir = workspace.behavior_labels.base_dir / dataset_name
+    if dst_dir.exists():
+        if not overwrite:
+            return False
+        shutil.rmtree(dst_dir)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(behavior_labels_path), dst_dir / LABELS_H5_FILENAME)
+    return True
 
 
 def import_dataset_from_components(
@@ -303,7 +407,7 @@ def import_dataset_from_components(
     dataset: Dataset,
     media_dir: Path,
     pose_labels_path: Optional[Path] = None,
-    pose_metadata_path: Optional[Path] = None,
+    pose_metadata_path: Optional[Path] = None,  # kept for callers; the metadata is regenerated
     behavior_labels_path: Optional[Path] = None,
     overwrite: bool = False,
     progress_cb: Optional[ProgressCallback] = None,
@@ -319,92 +423,27 @@ def import_dataset_from_components(
         if progress_cb:
             progress_cb(msg, pct)
 
-    def _cancelled() -> bool:
-        return bool(cancel_cb and cancel_cb())
-
     dataset_name = dataset_name.strip()
     if not dataset_name:
         raise ManualImportError("Dataset name is required.")
 
     _progress("Importing project...", 0)
+    project_installed = install_project(workspace, project, project_source_path, overwrite)
 
-    # 1. Project definition
-    project_installed = False
-    project_dst = workspace.projects.base_dir / f"{project.name}.json"
-    if not project_dst.exists() or overwrite:
-        project_dst.parent.mkdir(parents=True, exist_ok=True)
-        project_src = Path(project_source_path)
-        if project_src.exists():
-            shutil.copy2(project_src, project_dst)
-        else:
-            with open(project_dst, "w", encoding="utf-8") as f:
-                f.write(project.model_dump_json(indent=4))
-        project_installed = True
-
-    # 2. Dataset (manifest + media)
     _progress("Preparing dataset...", 2)
-    dataset_dir = workspace.datasets.base_dir / dataset_name
-    if dataset_dir.exists():
-        if not overwrite:
-            raise FileExistsError(f"Dataset '{dataset_name}' already exists in the workspace.")
-        shutil.rmtree(dataset_dir)
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-
-    rel_paths = list(dataset.files)
-    total = len(rel_paths)
-    copied = 0
-    missing: List[str] = []
-
-    data_dir = dataset_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    media_dir = Path(media_dir)
-    for i, rel in enumerate(rel_paths):
-        if _cancelled():
-            raise ManualImportError("Import cancelled.")
-        src = media_dir / rel
-        dst = data_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(src, dst)
-            copied += 1
-        except (OSError, shutil.Error) as e:
-            logger.warning("Could not copy media %s: %s", src, e)
-            missing.append(rel)
-        if total and (i % 5 == 0 or i == total - 1):
-            pct = 5 + int(80 * (i + 1) / total)
-            _progress(f"Copying media ({i + 1}/{total})...", pct)
-
-    imported_dataset = dataset.model_copy(
-        update={"name": dataset_name, "base_data_path": str(data_dir.resolve())}
+    copied, missing = install_dataset(
+        workspace, dataset, dataset_name, media_dir, overwrite, progress_cb, cancel_cb
     )
-    with open(dataset_dir / "manifest.json", "w", encoding="utf-8") as f:
-        f.write(imported_dataset.model_dump_json(indent=4))
 
-    # 3. Pose labels
     pose_imported = False
     if pose_labels_path is not None:
         _progress("Importing pose labels...", 90)
-        pose_dst_dir = workspace.pose_labels.base_dir / dataset_name
-        if pose_dst_dir.exists() and overwrite:
-            shutil.rmtree(pose_dst_dir)
-        if not pose_dst_dir.exists():
-            pose_dst_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(Path(pose_labels_path), pose_dst_dir / LABELS_H5_FILENAME)
-            pose_imported = True
-            if pose_metadata_path is not None and Path(pose_metadata_path).exists():
-                shutil.copy2(Path(pose_metadata_path), pose_dst_dir / POSE_METADATA_FILENAME)
+        pose_imported = install_pose_labels(workspace, dataset_name, pose_labels_path, overwrite)
 
-    # 4. Behavior labels
     behavior_imported = False
     if behavior_labels_path is not None:
         _progress("Importing behavior labels...", 96)
-        bc_dst_dir = workspace.behavior_labels.base_dir / dataset_name
-        if bc_dst_dir.exists() and overwrite:
-            shutil.rmtree(bc_dst_dir)
-        if not bc_dst_dir.exists():
-            bc_dst_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(Path(behavior_labels_path), bc_dst_dir / LABELS_H5_FILENAME)
-            behavior_imported = True
+        behavior_imported = install_behavior_labels(workspace, dataset_name, behavior_labels_path, overwrite)
 
     _progress("Import complete.", 100)
 
@@ -413,7 +452,7 @@ def import_dataset_from_components(
         "project_name": project.name,
         "project_installed": project_installed,
         "media_kind": "videos" if dataset.type == DatasetType.VIDEO_COLLECTION else "frames",
-        "num_media": total,
+        "num_media": len(dataset.files),
         "num_media_copied": copied,
         "num_missing": len(missing),
         "missing": missing,
