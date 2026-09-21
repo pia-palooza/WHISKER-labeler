@@ -1,410 +1,406 @@
-"""Dialog for importing a dataset from its individual pieces.
+"""Import from separate files: for files that didn't come from Export.
 
-Replaces the old "pick one bundle folder and hope it's valid" flow. Here the
-user browses to each piece separately — the project file, the dataset info
-file, the folder of frames/videos, and (optionally) label files — and each
-one is checked the moment it's picked, with a specific plain-English reason
-if it's wrong. Nothing is copied until every required piece has checked out.
+Nothing here should make you dig through folders for something you already have in your workspace.
+Pick your existing project (your active one is offered first) and your existing dataset from lists;
+browse only for what's genuinely new: a project file, a new dataset's info file and media, and label
+files. Each field is checked as soon as it's set, with a specific reason if it's wrong.
+
+Like the one-pick import, this builds a description of the chosen pieces
+(:func:`whisker.core.bundle_import.contents_from_files`) and a selection, so labels going onto an
+existing dataset get the same mismatch report and combine / replace choices, and it runs through the
+same import code.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QApplication,
-    QWidget,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
-    QVBoxLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QDialogButtonBox,
-    QGroupBox,
-    QCheckBox,
-    QFrame,
+    QRadioButton,
+    QVBoxLayout,
+    QWidget,
 )
 
+from whisker.core import bundle_import as bi
 from whisker.core import manual_import as mi
 from whisker.core.workspace import Workspace
+from whisker.gui.dialogs.attach_labels_dialog import AttachLabelsDialog
 
-_OK_STYLE = "color: #2e7d32;"
-_BAD_STYLE = "color: #c0392b;"
-_EMPTY_STYLE = "color: gray;"
+_COLORS = {"ok": "#2e7d32", "bad": "#c0392b", "warn": "#e67e22", "muted": "gray"}
 
 
 class ImportDatasetDialog(QDialog):
-    """Pick + validate each component, then import."""
+    """Choose existing things from lists, browse only for new ones, then import."""
 
-    def __init__(self, workspace: Workspace, parent: Optional[QWidget] = None):
+    def __init__(self, workspace: Workspace, parent: Optional[QWidget] = None,
+                 active_project_name: Optional[str] = None):
         super().__init__(parent)
-        self._workspace = workspace
+        self._ws = workspace
+        self._active_project = active_project_name
+        self._loading = True
+        self._key: Optional[tuple] = None
+        self._files = bi.contents_from_files()
+        self._name_touched = {"project": False, "dataset": False}
+        self._dataset_touched = False          # has the user picked a dataset themselves?
+        self.contents: Optional[bi.BundleContents] = None      # set when the user accepts
+        self.selection: Optional[bi.ImportSelection] = None
 
-        self._project_path: Optional[Path] = None
-        self._dataset_path: Optional[Path] = None
-        self._media_dir: Optional[Path] = None
-        self._pose_path: Optional[Path] = None
-        self._pose_meta_path: Optional[Path] = None
-        self._behavior_path: Optional[Path] = None
-
-        self._project = None
-        self._dataset = None
-
-        self._name_autofill_value = ""
-
-        self.setWindowTitle("Import Dataset")
-
-        screen = QApplication.primaryScreen()
-        self._dpi = screen.logicalDotsPerInch() / 96.0 if screen else 1.0
-        self.setMinimumWidth(int(640 * self._dpi))
-
-        main_layout = QVBoxLayout(self)
-        main_layout.addWidget(
-            self._hint_label(
-                "Select each piece below. Every field is checked as soon as you pick "
-                "it, so you'll see exactly what's wrong instead of a generic error."
-            )
+        self.setWindowTitle("Import from Separate Files")
+        self.setMinimumWidth(720)
+        root = QVBoxLayout(self)
+        hint = QLabel(
+            "For files that didn't come from Export. Choose things you already have from the lists; "
+            "browse only for what's new."
         )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {_COLORS['muted']};")
+        root.addWidget(hint)
 
-        # --- Required pieces ---
-        required_group = QGroupBox("Required")
-        required_layout = QVBoxLayout(required_group)
+        root.addWidget(self._build_project_group())
+        root.addWidget(self._build_dataset_group())
+        root.addWidget(self._build_labels_group())
 
-        self.project_edit, self.project_status = self._add_file_field(
-            required_layout,
-            "Project file",
-            "Select the project .json file...",
-            "Select Project File",
-            "JSON files (*.json)",
-            on_browse=self._on_browse_project,
-            on_clear=None,
-        )
+        self.problem_label = QLabel("")
+        self.problem_label.setWordWrap(True)
+        self.problem_label.setStyleSheet(f"color: {_COLORS['warn']};")
+        root.addWidget(self.problem_label)
 
-        self.dataset_edit, self.dataset_status = self._add_file_field(
-            required_layout,
-            "Dataset info file (manifest.json)",
-            "Select the dataset's manifest.json...",
-            "Select Dataset Info File",
-            "JSON files (*.json)",
-            on_browse=self._on_browse_dataset,
-            on_clear=None,
-        )
-
-        self.media_label_widget, self.media_edit, self.media_status = self._add_folder_field(
-            required_layout,
-            "Media folder",
-            "Select the folder containing the frames/videos...",
-            "Select Media Folder",
-            on_browse=self._on_browse_media,
-        )
-
-        self.name_edit, self.name_status = self._add_name_field(required_layout)
-
-        main_layout.addWidget(required_group)
-
-        # --- Optional pieces ---
-        optional_group = QGroupBox("Optional — labels")
-        optional_layout = QVBoxLayout(optional_group)
-
-        self.pose_edit, self.pose_status = self._add_file_field(
-            optional_layout,
-            "Pose labels file",
-            "(optional) Select a pose labels.h5 file...",
-            "Select Pose Labels File",
-            "HDF5 files (*.h5)",
-            on_browse=self._on_browse_pose,
-            on_clear=self._on_clear_pose,
-        )
-
-        self.behavior_edit, self.behavior_status = self._add_file_field(
-            optional_layout,
-            "Behavior labels file",
-            "(optional) Select a behavior labels.h5 file...",
-            "Select Behavior Labels File",
-            "HDF5 files (*.h5)",
-            on_browse=self._on_browse_behavior,
-            on_clear=self._on_clear_behavior,
-        )
-
-        main_layout.addWidget(optional_group)
-
-        # --- Conflicts / overwrite ---
-        self.conflict_label = QLabel("")
-        self.conflict_label.setWordWrap(True)
-        self.conflict_label.setStyleSheet("color: #e67e22;")
-        self.conflict_label.setVisible(False)
-        main_layout.addWidget(self.conflict_label)
-
-        self.overwrite_checkbox = QCheckBox("Overwrite existing items in this workspace")
-        self.overwrite_checkbox.setVisible(False)
-        self.overwrite_checkbox.toggled.connect(self._revalidate)
-        main_layout.addWidget(self.overwrite_checkbox)
-
-        # --- Buttons ---
-        self.button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Import")
-        self.button_box.accepted.connect(self.accept)
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.import_btn = self.button_box.button(QDialogButtonBox.StandardButton.Ok)
+        self.import_btn.setText("Import")
+        self.button_box.accepted.connect(self._on_import_clicked)
         self.button_box.rejected.connect(self.reject)
-        main_layout.addWidget(self.button_box)
+        root.addWidget(self.button_box)
 
+        self._populate_choices()
+        for radio in (self.project_existing_radio, self.project_file_radio,
+                      self.dataset_existing_radio, self.dataset_new_radio):
+            radio.toggled.connect(self._revalidate)
+        for edit in (self.project_edit, self.project_name_edit, self.dataset_edit, self.media_edit,
+                     self.dataset_name_edit, self.pose_edit, self.behavior_edit):
+            edit.textChanged.connect(self._revalidate)
+        for combo in (self.project_combo, self.dataset_combo):
+            combo.currentIndexChanged.connect(self._revalidate)
+        self.dataset_combo.activated.connect(lambda _i: setattr(self, "_dataset_touched", True))    # a real user pick
+        for box in (self.project_replace, self.dataset_replace):
+            box.toggled.connect(self._revalidate)
+        self.project_name_edit.textEdited.connect(lambda _t: self._name_touched.update(project=True))
+        self.dataset_name_edit.textEdited.connect(lambda _t: self._name_touched.update(dataset=True))
+
+        self._loading = False
         self._revalidate()
 
-    # -- widget-building helpers ----------------------------------------
+    # ------------------------------------------------------------ building
 
-    def _hint_label(self, text: str) -> QLabel:
-        label = QLabel(text)
+    @staticmethod
+    def _row(*widgets) -> QWidget:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        for i, w in enumerate(widgets):
+            h.addWidget(w, 1 if i == len(widgets) - 1 else 0)
+        return row
+
+    def _status(self) -> QLabel:
+        label = QLabel("")
         label.setWordWrap(True)
-        label.setStyleSheet("color: gray;")
         return label
 
-    def _add_file_field(
-        self, layout, title, placeholder, dialog_title, name_filter, on_browse, on_clear
-    ):
-        if layout.count():
-            layout.addWidget(self._divider())
-        title_label = QLabel(f"<b>{title}</b>")
-        layout.addWidget(title_label)
-
+    def _path_field(self, placeholder: str, browse, clearable: bool = False):
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        button = QPushButton("Browse...")
+        button.clicked.connect(lambda: browse(edit))
+        parts = [edit, button]
+        if clearable:
+            clear = QPushButton("Clear")
+            clear.clicked.connect(edit.clear)
+            parts.append(clear)
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        edit.textChanged.connect(self._revalidate)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(lambda: on_browse(edit, dialog_title, name_filter))
-        h.addWidget(edit)
-        h.addWidget(browse_btn)
-        if on_clear is not None:
-            clear_btn = QPushButton("Clear")
-            clear_btn.clicked.connect(lambda: on_clear(edit))
-            h.addWidget(clear_btn)
-        layout.addWidget(row)
+        h.addWidget(edit, 1)
+        for b in parts[1:]:
+            h.addWidget(b)
+        return row, edit
 
-        status = QLabel("")
-        status.setWordWrap(True)
-        status.setStyleSheet(_EMPTY_STYLE)
-        layout.addWidget(status)
+    def _build_project_group(self) -> QGroupBox:
+        box = QGroupBox("Project")
+        v = QVBoxLayout(box)
+        self.project_existing_radio = QRadioButton("Use my existing project:")
+        self.project_combo = QComboBox()
+        v.addWidget(self._row(self.project_existing_radio, self.project_combo))
+        self.project_note = self._status()
+        v.addWidget(self.project_note)
+        self.project_file_radio = QRadioButton("Add a project from a file:")
+        file_row, self.project_edit = self._path_field("Select the project .json file...", self._browse_project)
+        v.addWidget(self.project_file_radio)
+        v.addWidget(file_row)
+        self.project_name_edit = QLineEdit()
+        self.project_name_row = self._row(QLabel("Save it as:"), self.project_name_edit)
+        v.addWidget(self.project_name_row)
+        self.project_replace = QCheckBox()
+        v.addWidget(self.project_replace)
+        self.project_status = self._status()
+        v.addWidget(self.project_status)
+        group = QButtonGroup(self)
+        group.addButton(self.project_existing_radio)
+        group.addButton(self.project_file_radio)
+        self._project_group = group
+        return box
 
-        return edit, status
+    def _build_dataset_group(self) -> QGroupBox:
+        box = QGroupBox("Dataset")
+        v = QVBoxLayout(box)
+        self.dataset_existing_radio = QRadioButton("Use my existing dataset (its labels are added; nothing is copied):")
+        self.dataset_combo = QComboBox()
+        v.addWidget(self.dataset_existing_radio)
+        v.addWidget(self.dataset_combo)
+        self.dataset_new_radio = QRadioButton("Add a new dataset from files:")
+        v.addWidget(self.dataset_new_radio)
+        info_row, self.dataset_edit = self._path_field("Select the dataset's manifest.json...", self._browse_dataset)
+        self.dataset_info_label = QLabel("Dataset info file:")
+        v.addWidget(self.dataset_info_label)
+        v.addWidget(info_row)
+        self.dataset_status = self._status()
+        v.addWidget(self.dataset_status)
+        self.media_label = QLabel("Media folder:")
+        media_row, self.media_edit = self._path_field("Select the folder containing the frames/videos...", self._browse_media)
+        v.addWidget(self.media_label)
+        v.addWidget(media_row)
+        self.media_status = self._status()
+        v.addWidget(self.media_status)
+        self.dataset_name_edit = QLineEdit()
+        self.dataset_name_row = self._row(QLabel("Name:"), self.dataset_name_edit)
+        v.addWidget(self.dataset_name_row)
+        self.dataset_replace = QCheckBox()
+        v.addWidget(self.dataset_replace)
+        group = QButtonGroup(self)
+        group.addButton(self.dataset_existing_radio)
+        group.addButton(self.dataset_new_radio)
+        self._dataset_group = group
+        return box
 
-    def _add_folder_field(self, layout, title, placeholder, dialog_title, on_browse):
-        if layout.count():
-            layout.addWidget(self._divider())
-        title_label = QLabel(f"<b>{title}</b>")
-        layout.addWidget(title_label)
+    def _build_labels_group(self) -> QGroupBox:
+        box = QGroupBox("Labels (optional)")
+        v = QVBoxLayout(box)
+        v.addWidget(QLabel("Pose labels file (.h5):"))
+        row, self.pose_edit = self._path_field("(optional) Select a pose labels.h5 file...", self._browse_h5, clearable=True)
+        v.addWidget(row)
+        self.pose_status = self._status()
+        v.addWidget(self.pose_status)
+        v.addWidget(QLabel("Behavior labels file (.h5):"))
+        row, self.behavior_edit = self._path_field("(optional) Select a behavior labels.h5 file...", self._browse_h5, clearable=True)
+        v.addWidget(row)
+        self.behavior_status = self._status()
+        v.addWidget(self.behavior_status)
+        return box
 
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        edit.textChanged.connect(self._revalidate)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(lambda: on_browse(edit, dialog_title))
-        h.addWidget(edit)
-        h.addWidget(browse_btn)
-        layout.addWidget(row)
+    def _populate_choices(self):
+        projects = sorted(self._ws.projects.keys())
+        for name in projects:
+            self.project_combo.addItem(name, name)
+        if self._active_project in projects:
+            self.project_combo.setCurrentIndex(self.project_combo.findData(self._active_project))
+        self.project_existing_radio.setEnabled(bool(projects))
+        (self.project_existing_radio if projects else self.project_file_radio).setChecked(True)
 
-        status = QLabel("")
-        status.setWordWrap(True)
-        status.setStyleSheet(_EMPTY_STYLE)
-        layout.addWidget(status)
+        self._fill_dataset_combo()
+        datasets = self.dataset_combo.count()
+        self.dataset_existing_radio.setEnabled(bool(datasets))
+        (self.dataset_existing_radio if datasets else self.dataset_new_radio).setChecked(True)
 
-        return title_label, edit, status
-
-    def _add_name_field(self, layout):
-        layout.addWidget(self._divider())
-        layout.addWidget(QLabel("<b>Dataset name</b>"))
-        edit = QLineEdit()
-        edit.setPlaceholderText("Filled in automatically once the dataset info file loads...")
-        edit.textChanged.connect(self._on_name_edited)
-        layout.addWidget(edit)
-        status = QLabel("")
-        status.setWordWrap(True)
-        status.setStyleSheet(_EMPTY_STYLE)
-        layout.addWidget(status)
-        return edit, status
-
-    def _divider(self) -> QFrame:
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        return line
-
-    # -- browse handlers -------------------------------------------------
-
-    def _on_browse_project(self, edit: QLineEdit, title: str, name_filter: str):
-        start = edit.text().strip() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, title, start, name_filter)
-        if path:
-            edit.setText(path)
-
-    def _on_browse_dataset(self, edit: QLineEdit, title: str, name_filter: str):
-        start = edit.text().strip() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, title, start, name_filter)
-        if path:
-            edit.setText(path)
-
-    def _on_browse_media(self, edit: QLineEdit, title: str):
-        start = edit.text().strip() or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, title, start)
-        if path:
-            edit.setText(path)
-
-    def _on_browse_pose(self, edit: QLineEdit, title: str, name_filter: str):
-        start = edit.text().strip() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, title, start, name_filter)
-        if path:
-            edit.setText(path)
-
-    def _on_clear_pose(self, edit: QLineEdit):
-        edit.clear()
-
-    def _on_browse_behavior(self, edit: QLineEdit, title: str, name_filter: str):
-        start = edit.text().strip() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, title, start, name_filter)
-        if path:
-            edit.setText(path)
-
-    def _on_clear_behavior(self, edit: QLineEdit):
-        edit.clear()
-
-    def _on_name_edited(self):
-        if self.name_edit.text() != self._name_autofill_value:
-            # User is typing their own name; stop auto-filling from the dataset file.
-            self._name_autofill_value = None
-        self._revalidate()
-
-    # -- validation --------------------------------------------------------
-
-    def _set_status(self, label: QLabel, check: mi.ComponentCheck):
-        label.setText(check.message)
-        label.setStyleSheet(_OK_STYLE if check.ok else _BAD_STYLE)
-
-    def _revalidate(self):
-        # Project
-        self._project_path = self._path_or_none(self.project_edit.text())
-        project_check, self._project = mi.check_project_file(self._project_path)
-        self._set_status(self.project_status, project_check)
-
-        # Dataset
-        self._dataset_path = self._path_or_none(self.dataset_edit.text())
-        dataset_check, self._dataset = mi.check_dataset_file(self._dataset_path)
-        self._set_status(self.dataset_status, dataset_check)
-
-        # Media folder label + check (depends on dataset type once known)
-        self.media_label_widget.setText(f"<b>{mi.media_label_for(self._dataset)}</b>")
-        self._media_dir = self._path_or_none(self.media_edit.text())
-        media_check, _missing = mi.check_media_folder(self._media_dir, self._dataset)
-        self._set_status(self.media_status, media_check)
-
-        # Dataset name auto-fill (only while the user hasn't typed their own)
-        if self._dataset is not None and self._name_autofill_value is not None:
-            if self.name_edit.text().strip() in ("", self._name_autofill_value):
-                self.name_edit.blockSignals(True)
-                self.name_edit.setText(self._dataset.name)
-                self.name_edit.blockSignals(False)
-                self._name_autofill_value = self._dataset.name
-        dataset_name = self.name_edit.text().strip()
-        if not dataset_name:
-            self._set_status(
-                self.name_status,
-                mi.ComponentCheck.empty("Required — pick a name for this dataset."),
-            )
+    def _fill_dataset_combo(self):
+        """Your datasets, best fit for the chosen label files first; alphabetical until there are any."""
+        current = self.dataset_combo.currentData()
+        self.dataset_combo.blockSignals(True)
+        self.dataset_combo.clear()
+        ranked = self._files.pose.ok or self._files.behavior.ok
+        if ranked:
+            for name, hits, total in bi.rank_target_datasets(self._ws, self._files):
+                self.dataset_combo.addItem(f"{name}    — {hits} of {total} labels match" if total else name, name)
         else:
-            self._set_status(
-                self.name_status, mi.ComponentCheck.good(f"Will be imported as '{dataset_name}'.")
-            )
+            for name in sorted(self._ws.datasets.keys(), key=str.lower):
+                self.dataset_combo.addItem(name, name)
+        # A dataset the user picked stays picked; until they pick, the default follows the best fit.
+        if current and (self._dataset_touched or not ranked):
+            self.dataset_combo.setCurrentIndex(max(0, self.dataset_combo.findData(current)))
+        self.dataset_combo.blockSignals(False)
 
-        # Pose labels (optional)
-        self._pose_path = self._path_or_none(self.pose_edit.text())
-        pose_check, self._pose_meta_path = mi.check_pose_labels_file(self._pose_path)
-        self._set_status(self.pose_status, pose_check)
+    # ------------------------------------------------------------ browsing
 
-        # Behavior labels (optional)
-        self._behavior_path = self._path_or_none(self.behavior_edit.text())
-        behavior_check = mi.check_behavior_labels_file(self._behavior_path)
-        self._set_status(self.behavior_status, behavior_check)
+    def _browse_file(self, edit: QLineEdit, title: str, name_filter: str):
+        start = edit.text().strip() or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, title, start, name_filter)
+        if path:
+            edit.setText(path)
 
-        # Workspace conflicts
-        project_name = self._project.name if self._project else None
-        conflicts = mi.check_workspace_conflicts(self._workspace, dataset_name, project_name)
-        if conflicts.any:
-            existing = []
-            if conflicts.project_exists:
-                existing.append(f"project '{project_name}'")
-            if conflicts.dataset_exists:
-                existing.append(f"dataset '{dataset_name}'")
-            if conflicts.pose_labels_exist:
-                existing.append("pose labels")
-            if conflicts.behavior_labels_exist:
-                existing.append("behavior labels")
-            self.conflict_label.setText(
-                "Already present in this workspace: "
-                + ", ".join(existing)
-                + ". Check the box below to overwrite them."
-            )
-            self.conflict_label.setVisible(True)
-            self.overwrite_checkbox.setVisible(True)
-        else:
-            self.conflict_label.setVisible(False)
-            self.overwrite_checkbox.setVisible(False)
+    def _browse_project(self, edit):
+        self._browse_file(edit, "Select Project File", "JSON files (*.json)")
 
-        required_ok = (
-            project_check.ok
-            and dataset_check.ok
-            and media_check.ok
-            and bool(dataset_name)
-            and pose_check.ok
-            and behavior_check.ok
-        )
-        ok = required_ok and (not conflicts.any or self.overwrite_checkbox.isChecked())
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(ok)
+    def _browse_dataset(self, edit):
+        self._browse_file(edit, "Select Dataset Info File", "JSON files (*.json)")
+
+    def _browse_h5(self, edit):
+        self._browse_file(edit, "Select Labels File", "HDF5 files (*.h5)")
+
+    def _browse_media(self, edit):
+        start = edit.text().strip() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Select Media Folder", start)
+        if path:
+            edit.setText(path)
+
+    # ------------------------------------------------------------ state
 
     @staticmethod
     def _path_or_none(text: str) -> Optional[Path]:
         text = text.strip()
         return Path(text) if text else None
 
-    # -- results -------------------------------------------------------
+    def _set(self, label: QLabel, text: str, level: str = "muted"):
+        label.setText(text)
+        label.setStyleSheet(f"color: {_COLORS[level]};")
+        label.setVisible(bool(text))
 
-    @property
-    def project(self):
-        return self._project
+    def _build_selection(self) -> bi.ImportSelection:
+        sel = bi.ImportSelection()
+        if self.project_existing_radio.isChecked():
+            sel.project, sel.project_mode = True, "existing"
+            sel.existing_project = self.project_combo.currentData() or ""
+        else:
+            sel.project = bool(self.project_edit.text().strip())
+            sel.project_name = self.project_name_edit.text().strip()
+            sel.overwrite_project = self.project_replace.isVisibleTo(self) and self.project_replace.isChecked()
+        sel.pose = bool(self.pose_edit.text().strip())
+        sel.behavior = bool(self.behavior_edit.text().strip())
+        if self.dataset_existing_radio.isChecked():
+            sel.target_dataset = self.dataset_combo.currentData() or ""
+        else:
+            sel.dataset = bool(self.dataset_edit.text().strip())
+            sel.dataset_name = self.dataset_name_edit.text().strip()
+            sel.media_dir = self._path_or_none(self.media_edit.text())
+            sel.overwrite_dataset = self.dataset_replace.isVisibleTo(self) and self.dataset_replace.isChecked()
+        return sel
 
-    @property
-    def project_source_path(self) -> Optional[Path]:
-        return self._project_path
+    def _reload_files_if_changed(self):
+        project_mode = self.project_file_radio.isChecked()
+        dataset_mode = self.dataset_new_radio.isChecked()
+        key = (
+            self.project_edit.text().strip() if project_mode else "",
+            self.dataset_edit.text().strip() if dataset_mode else "",
+            self.media_edit.text().strip() if dataset_mode else "",
+            self.pose_edit.text().strip(),
+            self.behavior_edit.text().strip(),
+        )
+        if key == self._key:
+            return
+        self._key = key
+        self._files = bi.contents_from_files(*(self._path_or_none(k) for k in key))
+        c = self._files
+        # offer the files' own names, made unique, until the user types their own
+        for kind, edit, obj, unique in (
+            ("project", self.project_name_edit, c.project_obj, bi.unique_project_name),
+            ("dataset", self.dataset_name_edit, c.dataset_obj, bi.unique_dataset_name),
+        ):
+            if obj is not None and not self._name_touched[kind]:
+                edit.blockSignals(True)
+                edit.setText(unique(self._ws, obj.name))
+                edit.blockSignals(False)
+        self._fill_dataset_combo()
 
-    @property
-    def dataset(self):
-        return self._dataset
+    def _revalidate(self, *_):
+        if self._loading:
+            return
+        self._reload_files_if_changed()
+        c = self._files
+        project_file = self.project_file_radio.isChecked()
+        dataset_new = self.dataset_new_radio.isChecked()
 
-    @property
-    def media_dir(self) -> Optional[Path]:
-        return self._media_dir
+        # --- show only what applies
+        self.project_combo.setEnabled(not project_file)
+        for w in (self.project_edit, self.project_name_row):
+            w.setEnabled(project_file)
+        for w in (self.dataset_edit, self.media_edit, self.dataset_name_row):
+            w.setEnabled(dataset_new)
+        self.dataset_combo.setEnabled(not dataset_new)
+        sel = self._build_selection()
 
-    @property
-    def dataset_name(self) -> str:
-        return self.name_edit.text().strip()
+        project_name = self.project_name_edit.text().strip()
+        self.project_replace.setVisible(project_file and bool(project_name) and self._ws.projects.get(project_name) is not None)
+        self.project_replace.setText(f"Replace my project '{project_name}' with this one")
+        dataset_name = self.dataset_name_edit.text().strip()
+        self.dataset_replace.setVisible(dataset_new and bool(dataset_name) and self._ws.datasets.get(dataset_name) is not None)
+        self.dataset_replace.setText(f"Replace the dataset I already have called '{dataset_name}' (its media and labels)")
+        sel = self._build_selection()
 
-    @property
-    def pose_labels_path(self) -> Optional[Path]:
-        return self._pose_path
+        # --- per-field status
+        if not project_file:
+            gaps = bi.project_gaps(self._ws, c, sel.existing_project, pose=sel.pose, behavior=sel.behavior) if sel.existing_project else []
+            if gaps:
+                self._set(self.project_note, f"'{sel.existing_project}' doesn't define {'; '.join(gaps)}, which these labels use — "
+                                             "they'll import, but those won't show up when labeling with it.", "warn")
+            else:
+                self._set(self.project_note, "Nothing is added; your project is used as it is." if sel.existing_project else "")
+        else:
+            self._set(self.project_note, "")
+        text = self.project_edit.text().strip()
+        self._set(self.project_status,
+                  (c.project.summary or c.project.problem) if project_file and text else "",
+                  "ok" if c.project.ok else "bad")
+        if dataset_new:
+            info = self.dataset_edit.text().strip()
+            if info:
+                check, _ds = mi.check_dataset_file(Path(info))
+                self._set(self.dataset_status, check.message, "ok" if check.ok else "bad")
+            else:
+                self._set(self.dataset_status, "")
+            media = self.media_edit.text().strip()
+            if media and c.dataset_obj is not None:
+                check, _missing = mi.check_media_folder(Path(media), c.dataset_obj)
+                self._set(self.media_status, check.message, "ok" if check.ok else "bad")
+            else:
+                self._set(self.media_status, "")
+        else:
+            self._set(self.dataset_status, "")
+            self._set(self.media_status, "")
+        for part, label, text_edit in ((c.pose, self.pose_status, self.pose_edit), (c.behavior, self.behavior_status, self.behavior_edit)):
+            if text_edit.text().strip():
+                self._set(label, part.summary if part.ok else part.problem, "ok" if part.ok else "bad")
+            else:
+                self._set(label, "")
 
-    @property
-    def pose_metadata_path(self) -> Optional[Path]:
-        return self._pose_meta_path
+        # --- can we import?
+        problems = []
+        if project_file and not self.project_edit.text().strip():
+            problems.append("Choose the project file, or use one of your existing projects.")
+        if dataset_new and not self.dataset_edit.text().strip():
+            problems.append("Choose the dataset info file (manifest.json), or use one of your existing datasets.")
+        if not problems and not (sel.adds_project or sel.dataset or sel.pose or sel.behavior):
+            problems.append("Choose something to import: label files, a project file, or a new dataset.")
+        if not problems:
+            problems = bi.validate_selection(self._ws, c, sel)
+        self.problem_label.setText("\n".join(problems[:3]))
+        self.import_btn.setText("Next..." if sel.labels_need_target else "Import")
+        self.import_btn.setEnabled(not problems)
 
-    @property
-    def behavior_labels_path(self) -> Optional[Path]:
-        return self._behavior_path
+    # ------------------------------------------------------------ finishing
 
-    @property
-    def overwrite(self) -> bool:
-        return self.overwrite_checkbox.isChecked()
+    def _on_import_clicked(self):
+        sel = self._build_selection()
+        if sel.labels_need_target:
+            # The dataset was chosen here, so the follow-up is only how the labels compare and combine.
+            dialog = AttachLabelsDialog(self._ws, self._files, sel, self, choose_target=False)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+        self.contents, self.selection = self._files, sel
+        self.accept()

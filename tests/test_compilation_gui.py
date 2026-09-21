@@ -234,13 +234,15 @@ class ImportCompilationDialogTests(GuiCase):
         for name, expected in {"d1": (1, 1, 1), "vids": (1, 0, 1), "rats": (1, 1, 0)}.items():
             got = tuple(int(d._ticked(self.cell(d, name, k))) for k in ("media", "pose", "behavior"))
             self.assertEqual(got, expected, name)
+            self.assertEqual(self.row(d, name)["use"].currentData(), "", name)          # all "add as new"
         self.assertTrue(d.import_btn.isEnabled())
         self.assertEqual(d.problem_label.text(), "")
-        self.assertIn("proj (new)", d.projects_check.text())
-        self.assertIn("proj2 (new)", d.projects_check.text())
         self.assertTrue(d.projects_check.isChecked())
+        self.assertEqual(sorted(d._project_rows), ["proj", "proj2"])
+        for name in ("proj", "proj2"):
+            pr = d._project_rows[name]
+            self.assertEqual((pr["mode"].currentData(), pr["name"].text(), pr["name"].isEnabled()), ("new", name, True))
         self.assertFalse(d.policy_box.isVisibleTo(d))
-
     def test_the_header_names_the_compilation(self):
         d = self.dialog(self.package(name="my pack"))
         self.assertIn("my pack", d.header.text())
@@ -272,27 +274,114 @@ class ImportCompilationDialogTests(GuiCase):
     def test_a_name_clash_is_flagged_until_renamed(self):
         self.add_dataset(self.dst, "d1", self.frames, media_root=self.tmp / "m")
         d = self.dialog(self.package())
-        self.cell(d, "d1", "media").setCheckState(CHECKED)
-        self.assertEqual(self.row(d, "d1")["as_item"].text(), "d1_2")           # a free name was suggested
+        row = self.row(d, "d1")
+        self.assertEqual(row["use"].currentData(), "d1")                          # starts on "use mine"
+        row["use"].setCurrentIndex(0)                                              # the user chooses "add as new"
+        self.assertTrue(d._ticked(self.cell(d, "d1", "media")))                    # media tick back on
+        self.assertEqual(row["as_item"].text(), "d1_2")                            # a free name was suggested
         self.assertTrue(d.import_btn.isEnabled())
-        self.row(d, "d1")["as_item"].setText("d1")
+        row["as_item"].setText("d1")
         self.assertFalse(d.import_btn.isEnabled())
-        self.assertIn("already have a dataset called 'd1'", self.row(d, "d1")["notes"].text())
+        self.assertIn("already have a dataset called 'd1'", row["notes"].text())
         self.assertIn("'d1':", d.problem_label.text())
-        self.row(d, "d1")["as_item"].setText("brand new")
+        row["as_item"].setText("brand new")
         self.assertTrue(d.import_btn.isEnabled())
-
     def test_two_rows_cannot_share_a_new_name(self):
         d = self.dialog(self.package())
         self.row(d, "vids")["as_item"].setText("d1")
         self.assertFalse(d.import_btn.isEnabled())
         self.assertIn("both be imported as 'd1'", d.problem_label.text())
 
-    def test_labels_for_a_dataset_you_dont_have_need_its_frames_too(self):
+    def test_labels_for_a_dataset_you_dont_have_need_a_dataset_to_go_on(self):
         d = self.dialog(self.package())
-        self.cell(d, "d1", "media").setCheckState(UNCHECKED)
+        self.cell(d, "d1", "media").setCheckState(UNCHECKED)                       # neither add-as-new nor use-existing
         self.assertFalse(d.import_btn.isEnabled())
-        self.assertIn("You don't have a dataset called 'd1'", self.row(d, "d1")["notes"].text())
+        self.assertIn("These labels need a dataset", self.row(d, "d1")["notes"].text())
+    def test_datasets_you_have_start_on_use_existing_with_the_media_switched_off(self):
+        self.add_dataset(self.dst, "d1", self.frames, media_root=self.tmp / "m")
+        d = self.dialog(self.package())
+        row = self.row(d, "d1")
+        self.assertEqual(row["use"].currentData(), "d1")
+        self.assertFalse(bool(row["cells"]["media"].flags() & Qt.ItemFlag.ItemIsUserCheckable))    # nothing is copied
+        self.assertFalse(bool(row["as_item"].flags() & Qt.ItemFlag.ItemIsEditable))
+        self.assertEqual(self.row(d, "vids")["use"].currentData(), "")             # no such dataset here: add as new
+        row["use"].setCurrentIndex(0)
+        self.assertTrue(d._ticked(row["cells"]["media"]))
+        self.assertTrue(bool(row["as_item"].flags() & Qt.ItemFlag.ItemIsEditable))
+        row["use"].setCurrentIndex(row["use"].findData("d1"))
+        self.assertFalse(d._ticked(row["cells"]["media"]))
+        self.assertEqual(d.selection.items["d1"].target_dataset, "d1")
+
+    def test_a_row_can_use_a_dataset_of_a_different_name(self):
+        self.add_dataset(self.dst, "my_own_name", self.frames, media_root=self.tmp / "m")
+        root = self.package()
+        d = self.dialog(root)
+        row = self.row(d, "d1")
+        self.assertEqual(row["use"].currentData(), "")                             # different name: not preselected
+        choices = [row["use"].itemData(i) for i in range(row["use"].count())]
+        self.assertEqual(choices[:2], ["", "my_own_name"])                         # best fit is listed first
+        row["use"].setCurrentIndex(row["use"].findData("my_own_name"))
+        self.assertEqual(d.selection.items["d1"].target_dataset, "my_own_name")
+        self.assertIn("Pose: 3/3 frames match", row["notes"].text())
+        d._tick_all(False)
+        row["cells"]["pose"].setCheckState(CHECKED)
+        self.assertTrue(d.import_btn.isEnabled())
+        comp.import_compilation(self.dst, d.contents, d.selection)
+        self.rescan()
+        self.assertTrue(self.dst.pose_labels.has_pose_labels("my_own_name"))
+        self.assertNotIn("d1", self.dst.datasets.keys())
+
+    def test_projects_you_have_default_to_use_existing_and_can_be_switched(self):
+        self.add_project(self.dst, "proj")
+        d = self.dialog(self.package())
+        pr, pr2 = d._project_rows["proj"], d._project_rows["proj2"]
+        self.assertEqual(pr["mode"].currentData(), "existing:proj")
+        self.assertFalse(pr["name"].isEnabled())
+        self.assertIn("Nothing is added", pr["note"].text())
+        self.assertEqual(pr2["mode"].currentData(), "new")
+        pr["mode"].setCurrentIndex(0)                                              # switch to "add as new"
+        self.assertTrue(pr["name"].isEnabled())
+        pr["name"].setText("proj")                                                 # ...but that name is taken
+        self.assertFalse(d.import_btn.isEnabled())
+        self.assertIn("already have a project called 'proj'", d.problem_label.text())
+        pr["name"].setText("proj_copy")
+        self.assertTrue(d.import_btn.isEnabled())
+        self.assertEqual(d.selection.project_choices["proj"], ("new", "proj_copy"))
+
+    def test_a_project_can_be_mapped_onto_one_of_mine_and_gaps_are_flagged(self):
+        self.add_project(self.dst, "mine", body_parts=["nose"], identities=["mouse1"], behaviors=["groom"])
+        root = self.package()
+        d = self.dialog(root)
+        pr = d._project_rows["proj"]
+        pr["mode"].setCurrentIndex(pr["mode"].findData("existing:mine"))
+        self.assertEqual(d.selection.project_choices["proj"], ("existing", "mine"))
+        self.assertIn("doesn't define", pr["note"].text())
+        self.assertIn("tail_base", pr["note"].text())
+        self.assertTrue(d.import_btn.isEnabled())                                  # a heads-up, not a blocker
+        comp.import_compilation(self.dst, d.contents, d.selection)
+        self.dst.scan_projects()
+        self.assertEqual(sorted(self.dst.projects.keys()), ["mine", "proj2"])
+
+    def test_unticking_the_projects_gate_skips_them_all(self):
+        d = self.dialog(self.package())
+        d.projects_check.setChecked(False)
+        self.assertFalse(d.selection.import_projects)
+        self.assertFalse(d.projects_box.isEnabled())
+        comp.import_compilation(self.dst, d.contents, d.selection)
+        self.dst.scan_projects()
+        self.assertEqual(list(self.dst.projects.keys()), [])
+
+    def test_locating_media_is_only_offered_while_adding_as_new(self):
+        items = [CompilationItem("d1", "proj", include_media=False)]
+        root = self.package(items, name="refonly")
+        shutil.rmtree(self.tmp / "media" / "d1")
+        self.add_dataset(self.dst, "d1", self.frames, media_root=self.tmp / "m")
+        d = self.dialog(root)
+        row = self.row(d, "d1")
+        self.assertEqual(row["use"].currentData(), "d1")
+        with mock.patch.object(icd.QFileDialog, "getExistingDirectory", return_value=str(self.tmp)) as dialog:
+            d._on_double_click(d._rows.index(row), icd._NOTES)
+        dialog.assert_not_called()                                                 # using mine: no media are needed
 
     def test_a_broken_entry_shows_why_and_cannot_be_ticked(self):
         root = self.package()
@@ -390,11 +479,20 @@ class ResultMessageTests(GuiCase):
         text = self.describe({"projects": [], "datasets": [], "cancelled": True})
         self.assertIn("Import cancelled", text)
 
-    def test_existing_projects_are_reported_as_left_alone(self):
+    def test_projects_you_use_are_reported_as_such(self):
         self.add_project(self.dst, "proj")
         contents = comp.inspect_compilation(self.package())
-        sel = comp.default_compilation_selection(self.dst, contents)
-        sel.import_projects = True
+        sel = comp.default_compilation_selection(self.dst, contents)              # proj exists -> use it; proj2 is new
         text = self.describe(comp.import_compilation(self.dst, contents, sel))
         self.assertIn("Projects added: proj2.", text)
-        self.assertIn("Projects left as they were: proj.", text)
+        self.assertIn("Using your existing project(s): 'proj'.", text)
+
+    def test_a_project_mapped_to_one_of_yours_or_renamed_is_described(self):
+        self.add_project(self.dst, "mine")
+        contents = comp.inspect_compilation(self.package())
+        sel = comp.default_compilation_selection(self.dst, contents)
+        sel.project_choices["proj"] = ("existing", "mine")
+        sel.project_choices["proj2"] = ("new", "rat_project")
+        text = self.describe(comp.import_compilation(self.dst, contents, sel))
+        self.assertIn("Using your existing project(s): 'mine' (for 'proj').", text)
+        self.assertIn("Projects added: rat_project.", text)

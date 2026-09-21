@@ -33,7 +33,8 @@ class ImportDataType(str, enum.Enum):
 class ImportLabelsDialog(QDialog):
     """A dialog for importing labels from various formats."""
 
-    def __init__(self, workspace: Optional[Workspace], parent: QWidget | None = None):
+    def __init__(self, workspace: Optional[Workspace], parent: QWidget | None = None,
+                 active_project_name: Optional[str] = None):
         super().__init__(parent)
         self._workspace = workspace
         self.setWindowTitle("Import Labels")
@@ -66,12 +67,18 @@ class ImportLabelsDialog(QDialog):
         path_hbox.addWidget(browse_btn)
         grid_layout.addWidget(path_container, 0, 1)
 
-        # Row 1: Dataset Name
-        grid_layout.addWidget(self._create_right_label("Dataset Name:"), 1, 0)
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Enter a name for the new dataset...")
+        # Row 1: Dataset. Pick one you already have, or type a new name.
+        grid_layout.addWidget(self._create_right_label("Dataset:"), 1, 0)
+        self.name_combo = QComboBox()
+        self.name_combo.setEditable(True)
+        if self._workspace:
+            self.name_combo.addItems(sorted(self._workspace.datasets.keys(), key=str.lower))
+        self.name_combo.setCurrentIndex(-1)
+        self.name_edit = self.name_combo.lineEdit()        # same text API as before
+        self.name_edit.setPlaceholderText("Choose one of your datasets, or type a name for a new one...")
         self.name_edit.textChanged.connect(self._validate_state)
-        grid_layout.addWidget(self.name_edit, 1, 1)
+        self.name_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        grid_layout.addWidget(self.name_combo, 1, 1)
 
         # Row 2: Project Selection
         grid_layout.addWidget(self._create_right_label("Project:"), 2, 0)
@@ -84,6 +91,10 @@ class ImportLabelsDialog(QDialog):
             else:
                 self.project_combo.addItem("No projects found in workspace")
                 self.project_combo.setEnabled(False)
+        if active_project_name and self.project_combo.isEnabled():
+            i = self.project_combo.findText(active_project_name)
+            if i >= 0:
+                self.project_combo.setCurrentIndex(i)      # start on the project they're working in
         self.project_combo.currentIndexChanged.connect(self._validate_state)
         grid_layout.addWidget(self.project_combo, 2, 1)
 
@@ -165,7 +176,9 @@ class ImportLabelsDialog(QDialog):
 
         if path:
             self.path_edit.setText(path)
-            self.name_edit.setText(Path(path).name)
+            if not self.name_edit.text().strip():
+                # only suggest a name from the file when they haven't already chosen a dataset
+                self.name_edit.setText(Path(path).name)
 
     def _create_data_type_group(self) -> QGroupBox:
         group_box = QGroupBox("Data Type")

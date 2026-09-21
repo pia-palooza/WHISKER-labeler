@@ -3,7 +3,7 @@ import os
 import shutil
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from PyQt6.QtCore import Qt, QUrl, QThreadPool, QObject
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
@@ -41,7 +41,6 @@ from whisker.core.workers.bundle_workers import (
     ExportCompilationJob,
     ImportCompilationJob,
 )
-from whisker.core.workers.manual_import_workers import ImportComponentsJob
 from whisker.gui.signals import MessageBus
 from whisker.gui.worker_wrapper import Worker
 from whisker.gui.widgets.export_clip_dialog import ExportClipDialog
@@ -287,7 +286,7 @@ class ActionHandler(QObject):
             )
             return
 
-        dialog = ImportLabelsDialog(self._workspace, self.parent_widget)
+        dialog = ImportLabelsDialog(self._workspace, self.parent_widget, self._active_project_name())
         if not dialog.exec():
             return
 
@@ -363,20 +362,10 @@ class ActionHandler(QObject):
             overwrite = True
 
         def _on_finished(result):
-            msg = f"Exported '{dataset_name}' to:\n{result['bundle_dir']}\n\n"
-            if result.get("media_included"):
-                msg += (
-                    f"{result['media_kind'].capitalize()} copied: "
-                    f"{result['num_media_copied']}/{result['num_media']}"
-                )
-                if result.get("num_missing"):
-                    msg += f"\nMissing/skipped: {result['num_missing']}"
-            else:
-                msg += (
-                    f"{result['media_kind'].capitalize()} referenced "
-                    f"(not copied): {result['num_media']}"
-                )
-            QMessageBox.information(self.parent_widget, "Export Complete", msg)
+            msg, complete = self._describe_export(result, dataset_name)
+            (QMessageBox.information if complete else QMessageBox.warning)(
+                self.parent_widget, "Export Complete" if complete else "Export Finished With Problems", msg
+            )
 
         self._run_bundle_job(
             ExportBundleJob(
@@ -404,7 +393,7 @@ class ActionHandler(QObject):
             )
             return
 
-        dialog = ImportBundleDialog(self._workspace, self.parent_widget)
+        dialog = ImportBundleDialog(self._workspace, self.parent_widget, self._active_project_name())
         result = dialog.exec()
         if result == ADVANCED_RESULT:
             self._show_manual_import_dialog()
@@ -439,15 +428,56 @@ class ActionHandler(QObject):
         QMessageBox.information(self.parent_widget, "Import Complete", self._describe_compilation_import(result))
 
     @staticmethod
+    def _describe_export(result: dict, dataset_name: str) -> Tuple[str, bool]:
+        """``(message, complete)`` for a finished single export. ``complete`` is False if reading the
+        package back found anything the import tool couldn't use."""
+        kind = result["media_kind"]
+        msg = f"Exported '{dataset_name}' to:\n{result['bundle_dir']}\n\n"
+        if result.get("media_included"):
+            msg += f"{kind.capitalize()} copied: {result['num_media_copied']}/{result['num_media']}"
+        else:
+            msg += (f"{kind.capitalize()} referenced, not copied: {result['num_media']}\n"
+                    f"Whoever imports this will be asked where the {kind} are.")
+        problems = result.get("problems") or []
+        if problems:
+            msg += "\n\nThis package would NOT import completely:\n" + "\n".join(f"\u2022 {p}" for p in problems)
+            return msg, False
+        msg += "\n\nChecked: everything the import tool needs is in the package."
+        return msg, True
+
+    @staticmethod
+    def _describe_compilation_export(result: dict) -> Tuple[str, bool]:
+        msg = f"Exported {result['num_datasets']} dataset(s) to:\n{result['compilation_dir']}\n\n"
+        if result["num_media"]:
+            msg += f"Media copied: {result['num_media_copied']}/{result['num_media']}"
+        else:
+            msg += "No media were copied (labels and references only)."
+        referenced = [d["dataset_name"] for d in result.get("datasets", []) if not d.get("media_included")]
+        if referenced:
+            msg += ("\nNot copied for: " + ", ".join(referenced) +
+                    " \u2014 whoever imports these will be asked where the files are.")
+        problems = result.get("problems") or []
+        if problems:
+            msg += "\n\nThis package would NOT import completely:\n" + "\n".join(f"\u2022 {p}" for p in problems)
+            return msg, False
+        msg += "\n\nChecked: everything the import tool needs is in every dataset's folder."
+        return msg, True
+
+    @staticmethod
     def _describe_compilation_import(result: dict) -> str:
         """Plain-English summary of a compilation import: projects, then each dataset."""
         datasets = result.get("datasets", [])
         done = [d for d in datasets if not d["error"]]
         lines = [f"{len(done)} of {len(datasets)} dataset(s) imported."]
-        added = [p["name"] for p in result.get("projects", []) if p["installed"]]
-        kept = [p["name"] for p in result.get("projects", []) if not p["installed"]]
+        projects = result.get("projects", [])
+        added = [p.get("as") or p["name"] for p in projects if p["installed"]]
+        using = [f"'{p['existing']}'" + (f" (for '{p['name']}')" if p["existing"] != p["name"] else "")
+                 for p in projects if p.get("existing")]
+        kept = [p["name"] for p in projects if not p["installed"] and not p.get("existing")]
         if added:
             lines.append("Projects added: " + ", ".join(added) + ".")
+        if using:
+            lines.append("Using your existing project(s): " + ", ".join(using) + ".")
         if kept:
             lines.append("Projects left as they were: " + ", ".join(kept) + ".")
         for d in datasets:
@@ -491,14 +521,10 @@ class ActionHandler(QObject):
             overwrite = True
 
         def _on_finished(result: dict):
-            text = f"Exported {result['num_datasets']} dataset(s) to:\n{result['compilation_dir']}\n\n"
-            if result["num_media"]:
-                text += f"Media copied: {result['num_media_copied']}/{result['num_media']}"
-                if result["num_missing"]:
-                    text += f"\nMissing or skipped: {result['num_missing']}"
-            else:
-                text += "No media were copied (labels and references only)."
-            QMessageBox.information(self.parent_widget, "Export Complete", text)
+            text, complete = self._describe_compilation_export(result)
+            (QMessageBox.information if complete else QMessageBox.warning)(
+                self.parent_widget, "Export Complete" if complete else "Export Finished With Problems", text
+            )
 
         self._run_bundle_job(
             ExportCompilationJob(items, plans, dest, name, overwrite),
@@ -525,7 +551,7 @@ class ActionHandler(QObject):
         """Plain-English summary of what an import did (and didn't do)."""
         lines = []
         name = result.get("dataset_name")
-        if "project_name" in result:
+        if "project_name" in result and not result.get("project_existing"):
             lines.append(
                 f"Project '{result['project_name']}' added."
                 if result.get("project_installed") else f"Project '{result['project_name']}' left as it was."
@@ -561,60 +587,20 @@ class ActionHandler(QObject):
         return "\n".join(lines) or "Nothing was imported."
 
     def _show_manual_import_dialog(self):
-        """The older form: pick the project file, dataset info file, media folder and
-        label files individually. For data that didn't come from Export."""
-        dialog = ImportDatasetDialog(self._workspace, self.parent_widget)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        """Import from separate files: for data that didn't come from Export. Existing projects and
+        datasets are picked from lists; the user browses only for what's new."""
+        dialog = ImportDatasetDialog(self._workspace, self.parent_widget, self._active_project_name())
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.contents is None:
             return
-
-        if dialog.dataset is None or dialog.project is None or dialog.media_dir is None:
-            return
-
-        def _on_finished(result):
-            # Rescan the workspace on the GUI thread now that files are written.
-            self._workspace.scan_projects()
-            self._workspace.scan_datasets()
-            self._workspace.scan_labels()
-            MessageBus.get().publish("request/workspace/projects/refresh")
-            MessageBus.get().publish("request/workspace/datasets/refresh")
-            MessageBus.get().publish("request/workspace/labels/refresh")
-
-            msg = (
-                f"Imported dataset '{result['dataset_name']}' "
-                f"(project '{result['project_name']}').\n\n"
-            )
-            msg += (
-                f"{result['media_kind'].capitalize()} copied: "
-                f"{result['num_media_copied']}/{result['num_media']}"
-            )
-            extras = []
-            if result.get("pose_imported"):
-                extras.append("pose labels")
-            if result.get("behavior_imported"):
-                extras.append("behavior labels")
-            if extras:
-                msg += "\nImported: " + ", ".join(extras)
-            if result.get("num_missing"):
-                msg += f"\nMedia not found: {result['num_missing']}"
-            QMessageBox.information(self.parent_widget, "Import Complete", msg)
-
         self._run_bundle_job(
-            ImportComponentsJob(
-                self._workspace,
-                dialog.dataset_name,
-                dialog.project,
-                dialog.project_source_path,
-                dialog.dataset,
-                dialog.media_dir,
-                pose_labels_path=dialog.pose_labels_path,
-                pose_metadata_path=dialog.pose_metadata_path,
-                behavior_labels_path=dialog.behavior_labels_path,
-                overwrite=dialog.overwrite,
-            ),
-            "Importing Dataset",
-            _on_finished,
+            ImportBundleJob(self._workspace, dialog.contents, dialog.selection),
+            "Importing",
+            self._on_bundle_imported,
             "Import Failed",
         )
+
+    def _active_project_name(self) -> Optional[str]:
+        return self._active_project.name if self._active_project else None
 
     def _run_bundle_job(self, job, title: str, on_finished, error_title: str):
         """Run a bundle export/import job on the thread pool with a modal

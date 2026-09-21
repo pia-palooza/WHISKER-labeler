@@ -206,9 +206,21 @@ dataset to someone else (or move it between workspaces), use Export and Import:
 ### Export — File → Export → Export Dataset / Labels…
 
 Choose the dataset (you don't need to select it first) and tick what to include: the
-**project**, the **videos/frames**, the **pose labels**, the **behavior labels**. Untick the
-videos/frames for a small labels-only export that's easy to email. The result is one folder
-with a `README.txt` describing it.
+**project**, the **videos/frames**, the **pose labels**, the **behavior labels**. **Everything is
+ticked by default, including the videos/frames**, so the package is complete and self-contained.
+Untick the videos/frames only for a small labels-only export that's easy to email; whoever
+imports it is then asked to find the files themselves. The result is one folder with a
+`README.txt` describing it.
+
+An export is only ever left behind if it is complete:
+
+- **Before anything is copied**, every file is checked to exist and the destination is checked
+  to have room. A missing file stops the export, naming some of them, instead of producing a
+  package that can't be imported. (An existing package is not replaced if this fails.)
+- Each copied file is checked to be the same size as the original.
+- If anything fails or you cancel, the partly written folder is removed.
+- **Afterwards the finished package is read back the way the importer will read it**, and the
+  completion message tells you it was checked, or lists exactly what wouldn't import.
 
 ### Import — File → Import… (Ctrl+Shift+O)
 
@@ -217,8 +229,13 @@ folder inside it, or a folder that contains it (unzipping adds a level); the app
 explains exactly what it looked at if it can't. It then lists what the export contains, and
 you tick what you want: **project**, **videos/frames**, **pose labels**, **behavior labels**.
 
-- Anything you already have (same dataset name, identical project) starts unticked; a
-  re-import defaults to bringing in just the labels.
+- For the **project** and the **dataset** you choose **add as a new one** (under a name you
+  can edit) **or use one you already have** (pick it from your list). If you already have a
+  project or dataset with the same name, "use mine" is the starting choice, so a re-import
+  defaults to just bringing in the labels; switch to "add as new" to get a copy under a free
+  name (or tick *Replace*). Using an existing project installs nothing and tells you if it
+  doesn't define body parts, identities or behaviors that the labels use. Using an existing
+  dataset copies no videos/frames: the labels are added to it.
 - If the videos/frames weren't included, you'll be asked where they are.
 - **Labels without their dataset:** you're asked which of your datasets they belong to. The
   labels are checked against that dataset's files and any mismatches are reported. If the
@@ -239,8 +256,10 @@ If the export fails or is cancelled, the partly written folder is removed.
 To import one, pick the compilation folder in **File → Import…** and click **Choose datasets…**.
 A table lists every dataset with a checkbox for its videos/frames, pose labels and behavior labels:
 
-- Datasets you already have start with their videos/frames unticked, so a re-import brings in
-  just the labels for the dataset of the same name. Ticking one anyway suggests a free name.
+- Each dataset has a choice: **add as new** (under the name in "Add as new") or **use existing**
+  (pick one of your datasets; nothing is copied and the labels are added to it). Datasets you
+  already have start on "use existing" with the dataset of the same name selected. Each project
+  gets the same choice: add it as new under a name, or use one of yours.
 - Where labels would land on existing labels, one choice below the table decides:
   **combine keeping yours**, **combine using the imported ones**, or **replace yours**.
 - The *Notes* column reports label mismatches as you tick (e.g. "7/9 frames match, 2 skipped"),
@@ -248,11 +267,23 @@ A table lists every dataset with a checkbox for its videos/frames, pose labels a
 - Each project is installed once even if several datasets share it, and one dataset failing
   never stops the others — the summary lists what was imported and what wasn't.
 
-*Pick pieces manually…* (bottom of the Import dialog) is for files that didn't come from
-Export: choose the project file, dataset info file, media folder and label files one by one.
+**Import from separate files…** (button at the bottom of the Import dialog) is for files that
+didn't come from Export, for example a folder of frames and some label files. You shouldn't have to
+dig through folders for things you already have in your workspace:
+
+- **Project:** choose *one of your existing projects* from a list (your active project is offered
+  first), or add one from a `.json` file. If the labels use body parts, identities or behaviors
+  your chosen project doesn't define, you're told, but the import isn't blocked.
+- **Dataset:** choose *one of your existing datasets* (the list is ordered by how well the label
+  files fit each one), or add a new dataset from its info file and media folder.
+- **Labels:** browse for the pose and/or behavior label files. Onto an existing dataset they get the
+  same mismatch report and combine / replace choices as any other import.
+
+With an existing project and dataset chosen, the label files are the only thing to browse for.
 
 **File → Import Labels from Other Software…** brings in labels made with other tools
-(MARS, DLC, …).
+(MARS, DLC, …); pick one of your existing datasets from its list (or type a new name), and your
+active project is preselected.
 
 Or copy an exported `workflows/` (and `projects/`) folder into your full WHISKER workspace;
 WHISKER discovers the labels on its next scan.

@@ -38,7 +38,8 @@ class AttachLabelsDialog(QDialog):
     """Choose the target dataset and how to combine labels. Writes its answers into
     ``selection`` (target_dataset, pose_policy, behavior_policy, keep_unmatched) on accept."""
 
-    def __init__(self, workspace, contents: bi.BundleContents, selection: bi.ImportSelection, parent: Optional[QWidget] = None):
+    def __init__(self, workspace, contents: bi.BundleContents, selection: bi.ImportSelection,
+                 parent: Optional[QWidget] = None, choose_target: bool = True):
         super().__init__(parent)
         self._ws = workspace
         self._contents = contents
@@ -84,6 +85,12 @@ class AttachLabelsDialog(QDialog):
         layout.addWidget(self.button_box)
 
         self.dataset_combo.currentIndexChanged.connect(self._refresh)
+        if not choose_target:
+            # The user already picked the dataset in the import dialog; this is just the comparison.
+            self.dataset_combo.setVisible(False)
+            self.setWindowTitle(f"Add labels to '{self._target()}'")
+            intro.setText(f"These labels will be added to '{self._target()}'. They've been checked against its "
+                          "files; choose how to combine them with any labels it already has.")
         if not ranked:
             intro.setText("You don't have any datasets yet. Import the dataset (tick the frames/videos) "
                           "together with these labels, or create a dataset first.")

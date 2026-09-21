@@ -2,10 +2,9 @@
 info file, a folder of frames/videos, and (optionally) label files — instead
 of a single pre-packaged bundle folder.
 
-This is the "pick each piece yourself" path (Import... -> "Pick pieces manually"),
-for files that did not come from Export. Export folders are handled by
-:mod:`whisker.core.bundle_import`, which locates the export from any pick and
-imports whichever parts are ticked; it shares the ``install_*`` writers below.
+These checks and the ``install_*`` writers back every import: :mod:`whisker.core.bundle_import`
+uses them for exports (located from any pick) and for separately chosen files (Import ->
+"Import from separate files").
 
 The old "Import Annotation Bundle..." flow asked the user to pick *one*
 folder and tried to figure out whether it was a valid bundle. In practice
@@ -19,8 +18,8 @@ This module instead exposes one independent check per component
 :func:`check_media_folder`, :func:`check_pose_labels_file`,
 :func:`check_behavior_labels_file`) so the GUI can tell the user *exactly*
 which of the pieces they picked is the problem, as soon as they pick it —
-before they ever hit an "Import" button. :func:`import_dataset_from_components`
-then performs the actual copy once every required piece has checked out.
+before they ever hit an "Import" button. The ``install_*`` writers below then perform the
+actual copy; :mod:`whisker.core.bundle_import` composes them for every import.
 
 Pure filesystem work — no Qt, no in-memory workspace mutation — so it can run
 on a background thread like :mod:`whisker.core.bundle` does.
@@ -298,23 +297,32 @@ def check_workspace_conflicts(
 # ------------------------------------------------------------------ #
 # Import
 #
-# The install_* helpers each do one piece of an import. They are shared by
-# import_dataset_from_components() below (the "pick each piece" flow) and by
-# whisker.core.bundle_import (the one-pick bundle flow), so both write files
-# in exactly the same way.
+# The install_* helpers each do one piece of an import. whisker.core.bundle_import composes
+# them for both the one-pick import and the "separate files" import, so every path writes
+# files in exactly the same way.
 # ------------------------------------------------------------------ #
 
 
 def install_project(
-    workspace, project: Project, project_source_path: Optional[Path], overwrite: bool = False
+    workspace,
+    project: Project,
+    project_source_path: Optional[Path],
+    overwrite: bool = False,
+    name: Optional[str] = None,
 ) -> bool:
-    """Copy a project definition into the workspace. Returns False (and leaves the
-    workspace untouched) if a project of that name exists and ``overwrite`` is off."""
-    project_dst = workspace.projects.base_dir / f"{project.name}.json"
+    """Copy a project definition into the workspace, optionally under a different ``name``.
+    Returns False (and leaves the workspace untouched) if a project of that name exists and
+    ``overwrite`` is off."""
+    target_name = (name or project.name).strip()
+    project_dst = workspace.projects.base_dir / f"{target_name}.json"
     if project_dst.exists() and not overwrite:
         return False
     project_dst.parent.mkdir(parents=True, exist_ok=True)
-    if project_source_path is not None and Path(project_source_path).exists():
+    if target_name != project.name:
+        # A different name means a different file *and* a different "name" inside it.
+        project_dst.write_text(project.model_copy(update={"name": target_name}).model_dump_json(indent=4),
+                               encoding="utf-8")
+    elif project_source_path is not None and Path(project_source_path).exists():
         shutil.copy2(project_source_path, project_dst)
     else:
         project_dst.write_text(project.model_dump_json(indent=4), encoding="utf-8")
@@ -402,65 +410,3 @@ def install_behavior_labels(
     dst_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(Path(behavior_labels_path), dst_dir / LABELS_H5_FILENAME)
     return True
-
-
-def import_dataset_from_components(
-    workspace,
-    dataset_name: str,
-    project: Project,
-    project_source_path: Path,
-    dataset: Dataset,
-    media_dir: Path,
-    pose_labels_path: Optional[Path] = None,
-    pose_metadata_path: Optional[Path] = None,  # kept for callers; the metadata is regenerated
-    behavior_labels_path: Optional[Path] = None,
-    overwrite: bool = False,
-    progress_cb: Optional[ProgressCallback] = None,
-    cancel_cb: Optional[Callable[[], bool]] = None,
-) -> dict:
-    """Copy the picked components into ``workspace`` under ``dataset_name``.
-
-    Every argument here is expected to have already passed its corresponding
-    ``check_*`` function — this does the copying, not the validating.
-    """
-
-    def _progress(msg: str, pct: int):
-        if progress_cb:
-            progress_cb(msg, pct)
-
-    dataset_name = dataset_name.strip()
-    if not dataset_name:
-        raise ManualImportError("Dataset name is required.")
-
-    _progress("Importing project...", 0)
-    project_installed = install_project(workspace, project, project_source_path, overwrite)
-
-    _progress("Preparing dataset...", 2)
-    copied, missing = install_dataset(
-        workspace, dataset, dataset_name, media_dir, overwrite, progress_cb, cancel_cb
-    )
-
-    pose_imported = False
-    if pose_labels_path is not None:
-        _progress("Importing pose labels...", 90)
-        pose_imported = install_pose_labels(workspace, dataset_name, pose_labels_path, overwrite)
-
-    behavior_imported = False
-    if behavior_labels_path is not None:
-        _progress("Importing behavior labels...", 96)
-        behavior_imported = install_behavior_labels(workspace, dataset_name, behavior_labels_path, overwrite)
-
-    _progress("Import complete.", 100)
-
-    return {
-        "dataset_name": dataset_name,
-        "project_name": project.name,
-        "project_installed": project_installed,
-        "media_kind": "videos" if dataset.type == DatasetType.VIDEO_COLLECTION else "frames",
-        "num_media": len(dataset.files),
-        "num_media_copied": copied,
-        "num_missing": len(missing),
-        "missing": missing,
-        "pose_imported": pose_imported,
-        "behavior_imported": behavior_imported,
-    }

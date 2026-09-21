@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
@@ -171,7 +172,7 @@ def locate_bundle(picked: os.PathLike | str) -> BundleLocation:
     if (start / fmt.MANIFEST_FILENAME).is_file() or any(start.glob("*.json")):
         msg += (
             " This folder has .json files but no export description, so it wasn't made by "
-            "Export. If you have the pieces separately, use 'Pick pieces manually'."
+            "Export. If you have the pieces separately, use 'Import from separate files'."
         )
     else:
         msg += (
@@ -330,6 +331,11 @@ def _inspect_pose(c: BundleContents) -> None:
     if not path.is_file():
         c.pose = Part(True, False, path=path, problem=f"Listed in the export but the file is missing: {path.name}")
         return
+    _read_pose_file(c, path)
+
+
+def _read_pose_file(c: BundleContents, path: Path) -> None:
+    """Load a pose ``labels.h5`` into ``c`` (its keys, body parts, identities and the checklist part)."""
     try:
         pose = PoseDataset.from_file(path)
     except Exception as e:
@@ -352,6 +358,11 @@ def _inspect_behavior(c: BundleContents) -> None:
     if not path.is_file():
         c.behavior = Part(True, False, path=path, problem=f"Listed in the export but the file is missing: {path.name}")
         return
+    _read_behavior_file(c, path)
+
+
+def _read_behavior_file(c: BundleContents, path: Path) -> None:
+    """Load a behavior ``labels.h5`` into ``c`` (its keys, behaviors and the checklist part)."""
     try:
         beh = BehaviorDataset.from_file(path)
     except Exception as e:
@@ -363,6 +374,77 @@ def _inspect_behavior(c: BundleContents) -> None:
         return
     c.behavior_keys, c.behavior_names = keys, list(beh.behaviors)
     c.behavior = Part(True, True, f"{len(keys)} labeled video(s), {len(beh.bouts)} bout(s)", path=path)
+
+
+def contents_from_files(
+    project_path: Optional[Path] = None,
+    dataset_path: Optional[Path] = None,
+    media_dir: Optional[Path] = None,
+    pose_path: Optional[Path] = None,
+    behavior_path: Optional[Path] = None,
+) -> BundleContents:
+    """Describe separately picked files the way :func:`inspect_bundle` describes an export, so the
+    same selection, validation and import code handles both. Pieces that weren't given are
+    reported as not present; pieces that were given but are wrong say exactly why."""
+    given = [Path(x) for x in (dataset_path, project_path, pose_path, behavior_path, media_dir) if x]
+    c = BundleContents(root=given[0].parent if given else Path("."), info={})
+
+    if project_path:
+        path = Path(project_path)
+        check, project = mi.check_project_file(path)
+        c.project_obj = project
+        c.project = Part(True, check.ok, summary=check.message if check.ok else "",
+                         problem="" if check.ok else check.message, path=path)
+    else:
+        c.project = Part(present=False, summary="Not chosen")
+
+    if dataset_path:
+        path = Path(dataset_path)
+        check, dataset = mi.check_dataset_file(path)
+        c.dataset_obj = dataset
+        if dataset is None or not check.ok:
+            c.dataset = Part(True, False, path=path, problem=check.message)
+        else:
+            c.media_kind = fmt.media_kind_for(dataset.type)
+            n = len(dataset.files)
+            if media_dir:
+                media_check, missing = mi.check_media_folder(Path(media_dir), dataset)
+                c.media_missing = missing
+                if media_check.ok:
+                    c.media_dir, c.media_included = Path(media_dir), True
+                    c.dataset = Part(True, True, f"{n} {c.media_kind}", path=path)
+                else:
+                    c.dataset = Part(True, False, path=path, problem=media_check.message)
+            else:
+                c.dataset = Part(True, True, f"{n} {c.media_kind} \u2014 choose the folder that contains them", path=path)
+    else:
+        c.dataset = Part(present=False, summary="Not chosen")
+
+    for attr, given_path, reader in (("pose", pose_path, _read_pose_file), ("behavior", behavior_path, _read_behavior_file)):
+        if not given_path:
+            setattr(c, attr, Part(present=False, summary="Not chosen"))
+        elif not Path(given_path).is_file():
+            setattr(c, attr, Part(True, False, path=Path(given_path), problem=f"File not found: {given_path}"))
+        else:
+            reader(c, Path(given_path))
+    return c
+
+
+def verify_export(root: Path) -> List[str]:
+    """Read a finished export back exactly as the importer will, and report anything that would
+    stop it importing completely, in plain English. An empty list means everything the import tool
+    needs is in the package and readable."""
+    try:
+        c = inspect_bundle(root)
+    except BundleImportError as e:
+        return [str(e)]
+    problems: List[str] = []
+    if not c.dataset.ok:
+        problems.append(f"The dataset can't be imported from this package: {c.dataset.problem}")
+    for part, label in ((c.project, "project"), (c.pose, "pose labels"), (c.behavior, "behavior labels")):
+        if part.present and not part.ok:
+            problems.append(f"The {label} in this package can't be read: {part.problem}")
+    return problems
 
 
 # --------------------------------------------------------------------------- #
@@ -718,10 +800,15 @@ def apply_behavior_labels(
 @dataclass
 class ImportSelection:
     """What the user ticked, plus the answers to any follow-up questions."""
-    project: bool = False
+    project: bool = False               # handle the export's project (see ``project_mode``)
     dataset: bool = False               # the dataset info and its videos/frames
     pose: bool = False
     behavior: bool = False
+    # How the project is handled: 'new' saves the export's project (as ``project_name``);
+    # 'existing' installs nothing and uses ``existing_project``, one the user already has.
+    project_mode: str = "new"
+    project_name: str = ""              # name for the new project; empty means the export's own
+    existing_project: str = ""
     dataset_name: str = ""              # name for the imported dataset (when ``dataset``)
     media_dir: Optional[Path] = None    # where the media are, when not inside the export
     overwrite_project: bool = False
@@ -733,8 +820,17 @@ class ImportSelection:
     keep_unmatched: bool = False
 
     @property
+    def adds_project(self) -> bool:
+        return self.project and self.project_mode == "new"
+
+    @property
+    def uses_existing_project(self) -> bool:
+        return self.project and self.project_mode == "existing"
+
+    @property
     def any(self) -> bool:
-        return self.project or self.dataset or self.pose or self.behavior
+        """Something will actually be written. Using an existing project writes nothing."""
+        return self.adds_project or self.dataset or self.pose or self.behavior
 
     @property
     def labels_need_target(self) -> bool:
@@ -753,6 +849,46 @@ def project_relation(workspace, contents: BundleContents) -> str:
     return "identical" if mine.model_dump() == proj.model_dump() else "different"
 
 
+_INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def is_valid_name(name: str) -> bool:
+    """Can ``name`` be used as a project/dataset file or folder name?"""
+    return bool(name) and not _INVALID_NAME_CHARS.search(name) and name.strip(" .") == name
+
+
+def unique_project_name(workspace, name: str) -> str:
+    existing = set(workspace.projects.keys())
+    if name not in existing:
+        return name
+    n = 2
+    while f"{name}_{n}" in existing:
+        n += 1
+    return f"{name}_{n}"
+
+
+def project_gaps(workspace, contents: BundleContents, project_name: str,
+                 pose: bool = True, behavior: bool = True) -> List[str]:
+    """What the export's labels use that ``project_name`` doesn't define, e.g. ``["body parts
+    ear, tail"]``. Labels still import; the missing parts just won't appear while labeling."""
+    project = workspace.projects.get(project_name)
+    if project is None:
+        return []
+    gaps: List[str] = []
+    if pose and contents.pose.ok:
+        missing = [b for b in contents.pose_body_parts if b not in project.body_parts]
+        if missing:
+            gaps.append("body parts " + ", ".join(missing))
+        missing = [i for i in contents.pose_individuals if i not in project.identities]
+        if missing:
+            gaps.append("identities " + ", ".join(missing))
+    if behavior and contents.behavior.ok:
+        missing = [b for b in contents.behavior_names if b not in project.behaviors]
+        if missing:
+            gaps.append("behaviors " + ", ".join(missing))
+    return gaps
+
+
 def unique_dataset_name(workspace, name: str) -> str:
     existing = set(workspace.datasets.keys())
     if name not in existing:
@@ -764,12 +900,18 @@ def unique_dataset_name(workspace, name: str) -> str:
 
 
 def default_selection(workspace, contents: BundleContents) -> ImportSelection:
-    """A sensible starting point: tick everything that's importable, except things the
-    workspace already has — a re-import most likely wants the *labels*, attached to the
-    dataset that's already here."""
+    """A sensible starting point: tick everything that's importable. Where the workspace
+    already has the export's project, the default is to *use* it rather than add a copy; where
+    it already has the dataset, the labels attach to it and its media aren't copied again.
+    Every one of these is the user's choice to change."""
     sel = ImportSelection(dataset_name=contents.dataset_name)
     sel.pose, sel.behavior = contents.pose.ok, contents.behavior.ok
-    sel.project = contents.project.ok and project_relation(workspace, contents) == "new"
+    sel.project = contents.project.ok
+    if contents.project_obj is not None:
+        sel.project_name = unique_project_name(workspace, contents.project_obj.name)
+        if project_relation(workspace, contents) != "new":
+            sel.project_mode = "existing"
+            sel.existing_project = contents.project_obj.name
     dataset_exists = bool(contents.dataset_name) and workspace.datasets.get(contents.dataset_name) is not None
     sel.dataset = contents.dataset.ok and not dataset_exists
     if not sel.dataset and (sel.pose or sel.behavior):
@@ -790,13 +932,29 @@ def validate_selection(
     check, for the import dialog that asks that as a follow-up question."""
     problems: List[str] = []
     if not sel.any:
+        if sel.uses_existing_project:
+            return ["Using your existing project on its own imports nothing \u2014 tick something else, "
+                    "or choose to add the export's project as a new one."]
         return ["Tick at least one thing to import."]
-    for flag, part, label in ((sel.project, contents.project, "project"), (sel.dataset, contents.dataset, "dataset"),
+    for flag, part, label in ((sel.adds_project, contents.project, "project"), (sel.dataset, contents.dataset, "dataset"),
                               (sel.pose, contents.pose, "pose labels"), (sel.behavior, contents.behavior, "behavior labels")):
         if flag and not part.ok:
             problems.append(f"The {label} can't be imported: {part.problem or 'not in this export.'}")
     if problems:
         return problems
+
+    if sel.uses_existing_project:
+        if not sel.existing_project or workspace.projects.get(sel.existing_project) is None:
+            problems.append("Choose which of your projects to use.")
+    elif sel.adds_project:
+        new_name = (sel.project_name or (contents.project_obj.name if contents.project_obj else "")).strip()
+        if not new_name:
+            problems.append("Give the new project a name.")
+        elif not is_valid_name(new_name):
+            problems.append("The project name can't contain \\ / : * ? \" < > | or start or end with a space or dot.")
+        elif workspace.projects.get(new_name) is not None and not sel.overwrite_project:
+            problems.append(f"You already have a project called '{new_name}'. Choose another name, "
+                            "use your existing project, or tick 'Replace'.")
 
     if sel.dataset:
         name = sel.dataset_name.strip()
@@ -837,13 +995,26 @@ def import_from_bundle(
 
     result: dict = {"notes": []}
 
-    if sel.project:
+    if sel.uses_existing_project:
+        result["project_name"] = sel.existing_project
+        result["project_installed"] = False
+        result["project_existing"] = True
+        result["notes"].append(f"Using your existing project '{sel.existing_project}'.")
+        gaps = project_gaps(workspace, contents, sel.existing_project, pose=sel.pose, behavior=sel.behavior)
+        if gaps:
+            result["notes"].append(
+                f"Your project '{sel.existing_project}' doesn't define {'; '.join(gaps)}, which these labels "
+                "use, so those won't show up when labeling with it."
+            )
+    elif sel.adds_project:
         progress("Importing project...", 0)
-        installed = mi.install_project(workspace, contents.project_obj, contents.project.path, sel.overwrite_project)
-        result["project_name"] = contents.project_obj.name
+        new_name = (sel.project_name or contents.project_obj.name).strip()
+        installed = mi.install_project(workspace, contents.project_obj, contents.project.path,
+                                       sel.overwrite_project, name=new_name)
+        result["project_name"] = new_name
         result["project_installed"] = installed
         if not installed:
-            result["notes"].append(f"Kept your existing project '{contents.project_obj.name}'.")
+            result["notes"].append(f"Kept your existing project '{new_name}'.")
 
     target = sel.target_dataset
     if sel.dataset:

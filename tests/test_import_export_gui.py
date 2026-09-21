@@ -103,32 +103,127 @@ class ImportDialogTests(GuiCase):
         self.assertIn("missing", d._rows["pose"][1].text())
         self.assertTrue(d.import_btn.isEnabled())
 
-    def test_reimport_defaults_to_labels_for_the_dataset_you_have(self):
+    def import_project_and_dataset_into_dst(self):
         bi.import_from_bundle(self.dst, bi.inspect_bundle(self.bundle),
                               bi.ImportSelection(project=True, dataset=True, dataset_name="d1"))
         self.dst.scan_projects(); self.dst.scan_datasets(); self.dst.scan_labels()
+
+    def test_reimport_defaults_to_using_what_you_already_have(self):
+        self.import_project_and_dataset_into_dst()
         d = self.dialog(self.bundle)
-        self.assertEqual(self.checks(d), {"project": (False, True), "dataset": (False, True),
-                                          "pose": (True, True), "behavior": (True, True)})
+        # everything importable is ticked; "use mine" is the starting choice for the project and dataset
+        self.assertEqual(self.checks(d), {k: (True, True) for k in ("project", "dataset", "pose", "behavior")})
+        self.assertTrue(d.project_existing_radio.isChecked())
+        self.assertEqual(d.project_combo.currentData(), "proj")
+        self.assertIn("Nothing is added", d.project_note.text())
+        self.assertTrue(d.dataset_existing_radio.isChecked())
+        self.assertEqual(d.dataset_combo.currentData(), "d1")
+        self.assertIn("The labels are added to 'd1'", d.dataset_note.text())
         self.assertIn("already have a dataset called 'd1'", d._rows["dataset"][1].text())
         self.assertIn("this exact project", d._rows["project"][1].text())
-        self.assertEqual(d.import_btn.text(), "Next...")            # a follow-up question is coming
+        self.assertEqual(d.import_btn.text(), "Next...")            # the comparison / combine step follows
         self.assertTrue(d.import_btn.isEnabled())
-        self.assertIn("choose which of your datasets", d.labels_note.text())
+        self.assertIn("how the labels compare with 'd1'", d.labels_note.text())
+        self.assertFalse(d.media_row.isVisibleTo(d))                # nothing to locate: no media are copied
 
-    def test_ticking_the_dataset_you_already_have_needs_a_new_name_or_replace(self):
-        bi.import_from_bundle(self.dst, bi.inspect_bundle(self.bundle), bi.ImportSelection(dataset=True, dataset_name="d1"))
-        self.dst.scan_datasets()
+    def test_the_user_can_switch_to_adding_them_as_new(self):
+        self.import_project_and_dataset_into_dst()
         d = self.dialog(self.bundle)
-        d._rows["dataset"][0].setChecked(True)
-        self.assertEqual(d.name_edit.text(), "d1_2")                # suggested unique name
+        # dataset
+        d.dataset_new_radio.setChecked(True)
+        self.assertEqual(d.name_edit.text(), "d1_2")                # a free name is ready
         self.assertTrue(d.import_btn.isEnabled())
+        self.assertEqual(d.import_btn.text(), "Import")             # labels come with the new dataset: no follow-up
+        self.assertTrue(d.selection.dataset)
         d.name_edit.setText("d1")
         self.assertFalse(d.import_btn.isEnabled())
         self.assertTrue(d.dataset_replace.isVisibleTo(d))
         self.assertIn("already have a dataset called 'd1'", d.problem_label.text())
         d.dataset_replace.setChecked(True)
         self.assertTrue(d.import_btn.isEnabled())
+        # project
+        d.project_new_radio.setChecked(True)
+        self.assertEqual(d.project_name_edit.text(), "proj_2")
+        self.assertTrue(d.import_btn.isEnabled())
+        d.project_name_edit.setText("proj")
+        self.assertFalse(d.import_btn.isEnabled())
+        self.assertIn("already have a project called 'proj'", d.problem_label.text())
+        d.project_replace.setChecked(True)
+        self.assertTrue(d.import_btn.isEnabled())
+
+    def test_in_a_fresh_workspace_everything_is_added_as_new_and_existing_is_unavailable(self):
+        d = self.dialog(self.bundle)
+        self.assertTrue(d.project_new_radio.isChecked() and d.dataset_new_radio.isChecked())
+        self.assertFalse(d.project_existing_radio.isEnabled())       # nothing to choose from yet
+        self.assertFalse(d.dataset_existing_radio.isEnabled())
+        self.assertEqual(d.project_name_edit.text(), "proj")
+        self.assertEqual(d.name_edit.text(), "d1")
+        self.assertEqual(d.import_btn.text(), "Import")
+
+    def test_a_new_project_can_be_named_and_is_saved_under_that_name(self):
+        d = self.dialog(self.bundle)
+        d.project_name_edit.setText("my_project")
+        self.assertEqual(d.selection.project_name, "my_project")
+        bi.import_from_bundle(self.dst, d.contents, d.selection)
+        self.dst.scan_projects()
+        self.assertEqual(list(self.dst.projects.keys()), ["my_project"])
+
+    def test_choosing_one_of_my_projects_adds_none_and_flags_what_it_lacks(self):
+        self.add_project(self.dst, "mine", body_parts=["nose"], identities=["mouse1"], behaviors=["groom", "rear"])
+        d = self.dialog(self.bundle)
+        self.assertTrue(d.project_existing_radio.isEnabled())
+        d.project_existing_radio.setChecked(True)
+        self.assertEqual(d.project_combo.currentData(), "mine")
+        self.assertFalse(d.project_name_edit.isEnabled())
+        self.assertIn("doesn't define body parts tail_base", d.project_note.text())
+        self.assertTrue(d.import_btn.isEnabled())                   # a heads-up, not a blocker
+        sel = d.selection
+        self.assertEqual((sel.project_mode, sel.existing_project), ("existing", "mine"))
+        bi.import_from_bundle(self.dst, d.contents, sel)
+        self.dst.scan_projects(); self.dst.scan_datasets()
+        self.assertEqual(list(self.dst.projects.keys()), ["mine"])
+        self.assertIn("d1", self.dst.datasets.keys())
+
+    def test_using_my_existing_dataset_without_labels_is_flagged(self):
+        self.import_project_and_dataset_into_dst()
+        d = self.dialog(self.bundle)
+        d._rows["pose"][0].setChecked(False)
+        d._rows["behavior"][0].setChecked(False)
+        self.assertFalse(d.import_btn.isEnabled())
+        self.assertIn("only adds labels", d.problem_label.text())
+        self.assertIn("only adds labels", d.dataset_note.text())
+        d._rows["pose"][0].setChecked(True)
+        self.assertTrue(d.import_btn.isEnabled())
+
+    def test_a_dataset_of_a_different_name_can_be_chosen_and_the_best_fit_is_listed_first(self):
+        self.add_dataset(self.dst, "unrelated", ["z1.png", "z2.png"], media_root=self.tmp / "m1")
+        self.add_dataset(self.dst, "fits", self.files, media_root=self.tmp / "m2")
+        d = self.dialog(self.bundle)
+        self.assertTrue(d.dataset_new_radio.isChecked())            # no same-named dataset: default is to add
+        d.dataset_existing_radio.setChecked(True)
+        self.assertEqual(d.dataset_combo.itemData(0), "fits")       # best fit first
+        self.assertIn("3 of 5 labels match", d.dataset_combo.itemText(0))
+        self.assertEqual(d.selection.target_dataset, "fits")
+        self.assertFalse(d.selection.dataset)
+        d.dataset_combo.setCurrentIndex(d.dataset_combo.findData("unrelated"))
+        self.assertEqual(d.selection.target_dataset, "unrelated")
+
+    def test_choosing_the_dataset_here_means_the_followup_does_not_ask_again(self):
+        self.import_project_and_dataset_into_dst()
+        d = self.dialog(self.bundle)
+        with mock.patch.object(import_mod, "AttachLabelsDialog") as attach:
+            attach.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            d._on_import_clicked()
+        self.assertEqual(attach.call_args.kwargs, {"choose_target": False})
+
+    def test_not_choosing_here_leaves_the_followup_to_ask(self):
+        self.add_dataset(self.dst, "mine", self.files, media_root=self.tmp / "dm")
+        d = self.dialog(self.bundle)
+        d._rows["dataset"][0].setChecked(False)
+        with mock.patch.object(import_mod, "AttachLabelsDialog") as attach:
+            attach.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            d._on_import_clicked()
+        self.assertEqual(attach.call_args.kwargs, {"choose_target": True})
 
     def test_reference_only_export_asks_for_the_folder(self):
         b = self.export_bundle(self.src, "d1", name="ref", include_media=False)
@@ -251,6 +346,16 @@ class AttachDialogTests(GuiCase):
         self.assertFalse(d.keep_unmatched.isChecked())
         d._accept()
         self.assertFalse(sel.keep_unmatched)
+
+    def test_when_the_target_was_already_chosen_there_is_no_picker(self):
+        self.add_dataset(self.dst, "fits", self.files, media_root=self.tmp / "m")
+        contents = bi.inspect_bundle(self.bundle)
+        d = AttachLabelsDialog(self.dst, contents, bi.ImportSelection(pose=True, target_dataset="fits"), choose_target=False)
+        self.addCleanup(d.deleteLater)
+        self.assertFalse(d.dataset_combo.isVisibleTo(d))
+        self.assertIn("'fits'", d.windowTitle())
+        self.assertEqual(d._target(), "fits")
+        self.assertTrue(d.ok_btn.isEnabled())
 
     def test_no_datasets_at_all_explains_what_to_do(self):
         d, _ = self.make()

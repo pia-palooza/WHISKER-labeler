@@ -12,6 +12,7 @@ from typing import Dict, Optional
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -38,16 +40,18 @@ _BAD = "color: #c0392b;"
 _WARN = "color: #e67e22;"
 _MUTED = "color: gray;"
 
-ADVANCED_RESULT = 2       # dialog.exec() value when the user chose "Pick pieces manually"
+ADVANCED_RESULT = 2       # dialog.exec() value when the user chose "Import from separate files"
 COMPILATION_RESULT = 3    # ...or picked a compilation (several datasets); see ``compilation_root``
 
 
 class ImportBundleDialog(QDialog):
     """One pick -> checklist -> import."""
 
-    def __init__(self, workspace: Workspace, parent: Optional[QWidget] = None):
+    def __init__(self, workspace: Workspace, parent: Optional[QWidget] = None,
+                 active_project_name: Optional[str] = None):
         super().__init__(parent)
         self._workspace = workspace
+        self._active_project = active_project_name
         self.contents: Optional[bi.BundleContents] = None
         self.selection: Optional[bi.ImportSelection] = None
         self.compilation_root: Optional[Path] = None
@@ -110,39 +114,62 @@ class ImportBundleDialog(QDialog):
         self.details_box = QGroupBox("Details")
         d = QVBoxLayout(self.details_box)
 
+        # Project: add the export's as a new one, or use one you already have.
+        self.project_group = QWidget()
+        pg = QVBoxLayout(self.project_group)
+        pg.setContentsMargins(0, 0, 0, 0)
+        pg.addWidget(QLabel("<b>Project</b>"))
+        self.project_new_radio = QRadioButton("Add as a new project named:")
+        self.project_name_edit = QLineEdit()
+        pg.addWidget(self._choice_row(self.project_new_radio, self.project_name_edit))
+        self.project_existing_radio = QRadioButton("Use my existing project:")
+        self.project_combo = QComboBox()
+        pg.addWidget(self._choice_row(self.project_existing_radio, self.project_combo))
         self.project_replace = QCheckBox()
-        self.project_replace.toggled.connect(self._revalidate)
-        d.addWidget(self.project_replace)
+        pg.addWidget(self.project_replace)
+        self.project_note = QLabel("")
+        self.project_note.setWordWrap(True)
+        pg.addWidget(self.project_note)
+        self._project_mode = QButtonGroup(self)
+        self._project_mode.addButton(self.project_new_radio)
+        self._project_mode.addButton(self.project_existing_radio)
+        d.addWidget(self.project_group)
 
-        name_row = QWidget()
-        nr = QHBoxLayout(name_row)
-        nr.setContentsMargins(0, 0, 0, 0)
-        self.name_label = QLabel("Name for the imported dataset:")
+        # Dataset: add the export's as a new one, or attach to one you already have.
+        self.dataset_group = QWidget()
+        dg = QVBoxLayout(self.dataset_group)
+        dg.setContentsMargins(0, 0, 0, 0)
+        self.dataset_title = QLabel("<b>Dataset</b>")
+        dg.addWidget(self.dataset_title)
+        self.dataset_new_radio = QRadioButton("Add as a new dataset named:")
         self.name_edit = QLineEdit()
-        self.name_edit.textChanged.connect(self._revalidate)
-        nr.addWidget(self.name_label)
-        nr.addWidget(self.name_edit, 1)
-        self.name_row = name_row
-        d.addWidget(name_row)
-
+        self.name_row = self._choice_row(self.dataset_new_radio, self.name_edit)
+        dg.addWidget(self.name_row)
         self.dataset_replace = QCheckBox()
-        self.dataset_replace.toggled.connect(self._revalidate)
-        d.addWidget(self.dataset_replace)
-
+        dg.addWidget(self.dataset_replace)
         self.media_info = QLabel("")
         self.media_info.setWordWrap(True)
-        d.addWidget(self.media_info)
+        dg.addWidget(self.media_info)
         media_row = QWidget()
         mr = QHBoxLayout(media_row)
         mr.setContentsMargins(0, 0, 0, 0)
         self.media_edit = QLineEdit()
-        self.media_edit.textChanged.connect(self._revalidate)
         media_browse = QPushButton("Browse...")
         media_browse.clicked.connect(self._browse_media)
         mr.addWidget(self.media_edit, 1)
         mr.addWidget(media_browse)
         self.media_row = media_row
-        d.addWidget(media_row)
+        dg.addWidget(media_row)
+        self.dataset_existing_radio = QRadioButton("Use my existing dataset:")
+        self.dataset_combo = QComboBox()
+        dg.addWidget(self._choice_row(self.dataset_existing_radio, self.dataset_combo))
+        self.dataset_note = QLabel("")
+        self.dataset_note.setWordWrap(True)
+        dg.addWidget(self.dataset_note)
+        self._dataset_mode = QButtonGroup(self)
+        self._dataset_mode.addButton(self.dataset_new_radio)
+        self._dataset_mode.addButton(self.dataset_existing_radio)
+        d.addWidget(self.dataset_group)
 
         self.labels_note = QLabel("")
         self.labels_note.setWordWrap(True)
@@ -150,6 +177,15 @@ class ImportBundleDialog(QDialog):
         d.addWidget(self.labels_note)
         root.addWidget(self.details_box)
         self.details_box.setVisible(False)
+
+        for radio in (self.project_new_radio, self.project_existing_radio, self.dataset_new_radio, self.dataset_existing_radio):
+            radio.toggled.connect(self._revalidate)
+        for edit in (self.project_name_edit, self.name_edit, self.media_edit):
+            edit.textChanged.connect(self._revalidate)
+        for combo in (self.project_combo, self.dataset_combo):
+            combo.currentIndexChanged.connect(self._revalidate)
+        for box in (self.project_replace, self.dataset_replace):
+            box.toggled.connect(self._revalidate)
 
         self.problem_label = QLabel("")
         self.problem_label.setWordWrap(True)
@@ -162,8 +198,9 @@ class ImportBundleDialog(QDialog):
         root.addWidget(line)
 
         self.button_box = QDialogButtonBox()
-        self.manual_btn = self.button_box.addButton("Pick pieces manually...", QDialogButtonBox.ButtonRole.ActionRole)
-        self.manual_btn.setToolTip("For files that didn't come from Export: choose the project, dataset, media and label files one by one.")
+        self.manual_btn = self.button_box.addButton("Import from separate files...", QDialogButtonBox.ButtonRole.ActionRole)
+        self.manual_btn.setToolTip("For files that didn't come from Export: use your existing project and dataset, "
+                                   "and browse only for the label files or media that are new.")
         self.manual_btn.clicked.connect(lambda: self.done(ADVANCED_RESULT))
         self.import_btn = self.button_box.addButton("Import", QDialogButtonBox.ButtonRole.AcceptRole)
         self.button_box.addButton(QDialogButtonBox.StandardButton.Cancel)
@@ -178,6 +215,16 @@ class ImportBundleDialog(QDialog):
 
         self._set_status("", _MUTED)
         self.import_btn.setEnabled(False)
+
+    @staticmethod
+    def _choice_row(radio: QRadioButton, field: QWidget) -> QWidget:
+        """``( ) label  [ field ]`` on one line."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(radio)
+        h.addWidget(field, 1)
+        return row
 
     # ------------------------------------------------------------ picking
 
@@ -304,7 +351,9 @@ class ImportBundleDialog(QDialog):
         kind = self._kind().capitalize()
         self._rows["dataset"][0].setText(kind)
         parts = {"project": contents.project, "dataset": contents.dataset, "pose": contents.pose, "behavior": contents.behavior}
-        ticked = {"project": selection.project, "dataset": selection.dataset, "pose": selection.pose, "behavior": selection.behavior}
+        # The dataset row means "the export's dataset is part of this import"; whether it's added
+        # as new or matched to one you have is the choice underneath.
+        ticked = {"project": selection.project, "dataset": contents.dataset.ok, "pose": selection.pose, "behavior": selection.behavior}
         for key, part in parts.items():
             check, note_label = self._rows[key]
             check.setEnabled(part.ok)
@@ -326,11 +375,39 @@ class ImportBundleDialog(QDialog):
             note_label.setText(text)
             note_label.setStyleSheet(style)
 
-        self.name_edit.setText(selection.dataset_name)
+        self._load_choices(contents, selection)
         self.media_edit.setText(str(selection.media_dir) if selection.media_dir and not contents.media_dir else "")
         self._loading = False
         self._refresh_details()
         self._revalidate()
+
+    def _load_choices(self, contents: bi.BundleContents, selection: bi.ImportSelection):
+        """Fill the project and dataset pickers and set the starting choices."""
+        ws = self._workspace
+        projects = sorted(ws.projects.keys())
+        self.project_combo.clear()
+        for name in projects:
+            self.project_combo.addItem(name, name)
+        self.project_existing_radio.setEnabled(bool(projects))
+        self.project_name_edit.setText(selection.project_name or (contents.project_obj.name if contents.project_obj else ""))
+        use_existing = selection.project_mode == "existing" and bool(projects)
+        (self.project_existing_radio if use_existing else self.project_new_radio).setChecked(True)
+        if selection.existing_project:
+            self.project_combo.setCurrentIndex(max(0, self.project_combo.findData(selection.existing_project)))
+        elif self._active_project in projects:
+            # switching to "use mine" should land on the project they're working in
+            self.project_combo.setCurrentIndex(self.project_combo.findData(self._active_project))
+
+        ranked = bi.rank_target_datasets(ws, contents)
+        self.dataset_combo.clear()
+        for name, hits, total in ranked:
+            self.dataset_combo.addItem(f"{name}    \u2014 {hits} of {total} labels match" if total else name, name)
+        self.dataset_existing_radio.setEnabled(bool(ranked))
+        use_existing = (not selection.dataset) and bool(selection.target_dataset) and contents.dataset.ok
+        (self.dataset_existing_radio if use_existing else self.dataset_new_radio).setChecked(True)
+        if selection.target_dataset:
+            self.dataset_combo.setCurrentIndex(max(0, self.dataset_combo.findData(selection.target_dataset)))
+        self.name_edit.setText(selection.dataset_name)
 
     def _kind(self) -> str:
         return self.contents.media_kind if self.contents else "frames"
@@ -344,67 +421,112 @@ class ImportBundleDialog(QDialog):
         self._revalidate()
 
     def _refresh_details(self):
-        """Show only the follow-up questions that apply to the current ticks."""
+        """Show only the follow-up questions that apply to the current ticks and choices."""
         c = self.contents
         if c is None:
             return
         ws = self._workspace
         want = {k: self._rows[k][0].isChecked() for k in self._rows}
-
-        # project
-        relation = bi.project_relation(ws, c) if c.project_obj else "new"
-        show_project = want["project"] and relation != "new"
-        self.project_replace.setVisible(show_project)
-        if show_project:
-            self.project_replace.setText(f"Replace my project '{c.project_obj.name}' with the one in this export")
-            self.project_replace.setToolTip("Unticked, your existing project is kept and this one is skipped.")
-
-        # dataset
-        self.name_row.setVisible(want["dataset"])
-        exists = want["dataset"] and ws.datasets.get(self.name_edit.text().strip()) is not None
-        self.dataset_replace.setVisible(exists)
-        if exists:
-            self.dataset_replace.setText(
-                f"Replace the dataset I already have called '{self.name_edit.text().strip()}' "
-                "(its media and labels)"
-            )
-        show_media = want["dataset"]
-        self.media_info.setVisible(show_media)
-        self.media_row.setVisible(show_media and c.media_dir is None)
-        if show_media:
-            if c.media_dir is None:
-                self.media_info.setText(
-                    f"The {c.media_kind} aren't inside this export. Choose the folder that contains them:"
-                )
-                self.media_info.setStyleSheet(_WARN)
-            else:
-                where = "inside the export" if c.media_included else "at their original location"
-                self.media_info.setText(f"The {c.media_kind} will be copied from {where}.")
-                self.media_info.setStyleSheet(_MUTED)
-
-        # labels
         labels = want["pose"] or want["behavior"]
-        if labels and not want["dataset"]:
+
+        # --- project
+        show_project = want["project"] and c.project_obj is not None
+        self.project_group.setVisible(show_project)
+        if show_project:
+            new_mode = self.project_new_radio.isChecked()
+            self.project_name_edit.setEnabled(new_mode)
+            self.project_combo.setEnabled(not new_mode)
+            name = self.project_name_edit.text().strip()
+            taken = new_mode and ws.projects.get(name) is not None
+            self.project_replace.setVisible(taken)
+            if taken:
+                self.project_replace.setText(f"Replace my project '{name}' with the one in this export")
+            if new_mode:
+                relation = bi.project_relation(ws, c)
+                self.project_note.setText(
+                    "You have a project with this name that differs from the export's." if relation == "different" else "")
+                self.project_note.setStyleSheet(_WARN)
+            else:
+                chosen = self.project_combo.currentData() or ""
+                gaps = bi.project_gaps(ws, c, chosen, pose=want["pose"], behavior=want["behavior"]) if chosen else []
+                if gaps:
+                    self.project_note.setText(
+                        f"'{chosen}' doesn't define {'; '.join(gaps)}, which these labels use \u2014 they'll import, "
+                        "but those won't show up when labeling with it.")
+                    self.project_note.setStyleSheet(_WARN)
+                else:
+                    self.project_note.setText("Nothing is added; your project is used as it is.")
+                    self.project_note.setStyleSheet(_MUTED)
+            self.project_note.setVisible(bool(self.project_note.text()))
+
+        # --- dataset
+        show_dataset = want["dataset"]
+        self.dataset_group.setVisible(show_dataset)
+        existing_mode = show_dataset and self.dataset_existing_radio.isChecked()
+        new_mode = show_dataset and not existing_mode
+        if show_dataset:
+            self.name_edit.setEnabled(new_mode)
+            self.dataset_combo.setEnabled(existing_mode)
+            name = self.name_edit.text().strip()
+            taken = new_mode and ws.datasets.get(name) is not None
+            self.dataset_replace.setVisible(taken)
+            if taken:
+                self.dataset_replace.setText(f"Replace the dataset I already have called '{name}' (its media and labels)")
+            self.media_info.setVisible(new_mode)
+            self.media_row.setVisible(new_mode and c.media_dir is None)
+            if new_mode:
+                if c.media_dir is None:
+                    self.media_info.setText(
+                        f"The {c.media_kind} aren't inside this export. Choose the folder that contains them:")
+                    self.media_info.setStyleSheet(_WARN)
+                else:
+                    where = "inside the export" if c.media_included else "at their original location"
+                    self.media_info.setText(f"The {c.media_kind} will be copied from {where}.")
+                    self.media_info.setStyleSheet(_MUTED)
+            self.dataset_note.setVisible(existing_mode)
+            if existing_mode:
+                target = self.dataset_combo.currentData() or ""
+                if labels:
+                    self.dataset_note.setText(f"No {c.media_kind} are copied. The labels are added to '{target}'.")
+                    self.dataset_note.setStyleSheet(_MUTED)
+                else:
+                    self.dataset_note.setText("Using an existing dataset only adds labels to it \u2014 tick pose or "
+                                              "behavior labels, or choose to add the dataset as new.")
+                    self.dataset_note.setStyleSheet(_WARN)
+
+        # --- labels
+        goes_with_new_dataset = show_dataset and new_mode
+        if labels and goes_with_new_dataset:
+            self.labels_note.setText("The labels will be attached to the dataset you're importing.")
+        elif labels and existing_mode:
+            self.labels_note.setText(
+                f"Next you'll see how the labels compare with '{self.dataset_combo.currentData() or ''}' "
+                "and choose how to combine them with any labels it already has.")
+        elif labels:
             self.labels_note.setText(
                 "Next you'll choose which of your datasets these labels belong to, and how to "
-                "combine them with any labels it already has."
-            )
-        elif labels:
-            self.labels_note.setText("The labels will be attached to the dataset you're importing.")
+                "combine them with any labels it already has.")
         else:
             self.labels_note.setText("")
         self.labels_note.setVisible(labels)
 
-        self.details_box.setVisible(any(w.isVisibleTo(self.details_box) for w in (
-            self.project_replace, self.name_row, self.dataset_replace, self.media_info, self.media_row, self.labels_note)))
-        self.import_btn.setText("Next..." if labels and not want["dataset"] else "Import")
+        self.details_box.setVisible(self.project_group.isVisibleTo(self.details_box)
+                                    or self.dataset_group.isVisibleTo(self.details_box) or labels)
+        self.import_btn.setText("Next..." if labels and not goes_with_new_dataset else "Import")
 
     def _sync_selection(self) -> bi.ImportSelection:
         sel = self.selection
         sel.project = self._rows["project"][0].isChecked()
-        sel.dataset = self._rows["dataset"][0].isChecked()
+        sel.project_mode = "existing" if self.project_existing_radio.isChecked() else "new"
+        sel.project_name = self.project_name_edit.text().strip()
+        sel.existing_project = self.project_combo.currentData() or ""
         sel.pose = self._rows["pose"][0].isChecked()
         sel.behavior = self._rows["behavior"][0].isChecked()
+        dataset_ticked = self._rows["dataset"][0].isChecked()
+        existing = dataset_ticked and self.dataset_existing_radio.isChecked()
+        sel.dataset = dataset_ticked and not existing
+        if dataset_ticked:
+            sel.target_dataset = (self.dataset_combo.currentData() or "") if existing else ""
         sel.dataset_name = self.name_edit.text().strip()
         sel.overwrite_project = self.project_replace.isVisibleTo(self) and self.project_replace.isChecked()
         sel.overwrite_dataset = self.dataset_replace.isVisibleTo(self) and self.dataset_replace.isChecked()
@@ -418,6 +540,10 @@ class ImportBundleDialog(QDialog):
         self._refresh_details()
         sel = self._sync_selection()
         problems = bi.validate_selection(self._workspace, self.contents, sel, check_target=False)
+        if (self._rows["dataset"][0].isChecked() and self.dataset_existing_radio.isChecked()
+                and not (sel.pose or sel.behavior)):
+            problems.insert(0, "Using an existing dataset only adds labels to it \u2014 tick pose or behavior "
+                               "labels, or choose to add the dataset as new.")
         self.problem_label.setText("\n".join(problems[:3]))
         self.import_btn.setEnabled(not problems)
 
@@ -429,7 +555,10 @@ class ImportBundleDialog(QDialog):
             return
         sel = self._sync_selection()
         if sel.labels_need_target:
-            dialog = AttachLabelsDialog(self._workspace, self.contents, sel, self)
+            # If they already chose which dataset the labels go on, don't ask again; the follow-up
+            # is then only about how the labels compare and combine.
+            chose_target = self._rows["dataset"][0].isChecked() and self.dataset_existing_radio.isChecked()
+            dialog = AttachLabelsDialog(self._workspace, self.contents, sel, self, choose_target=not chose_target)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return          # back to this dialog so they can change their mind
         self.accept()

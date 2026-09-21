@@ -109,9 +109,9 @@ class ExportAnnotationsDialog(QDialog):
         self.include_project_checkbox = QCheckBox(
             "Project definition (body parts, identities, behaviors)"
         )
+        self._media_kind = "videos" if self._is_video else "frames"
         self.include_media_checkbox = QCheckBox(
-            f"The {'videos' if self._is_video else 'frames'} themselves "
-            "(untick for a small labels-only export)"
+            f"The {self._media_kind} themselves (recommended: the package is then complete and self-contained)"
         )
         self.include_pose_checkbox = QCheckBox("Pose labels")
         self.include_behavior_checkbox = QCheckBox("Behavior labels")
@@ -125,6 +125,13 @@ class ExportAnnotationsDialog(QDialog):
             checkbox.setChecked(True)
             checkbox.toggled.connect(self._refresh_preview)
             include_layout.addWidget(checkbox)
+        self.media_warning = QLabel(
+            f"Without the {self._media_kind}, whoever imports this package will be asked to find them themselves. "
+            "Fine for a small labels-only export; otherwise leave this ticked."
+        )
+        self.media_warning.setWordWrap(True)
+        self.media_warning.setStyleSheet("color: #e67e22;")
+        include_layout.addWidget(self.media_warning)
         # The choices sit above the preview they drive.
         main_layout.insertWidget(main_layout.indexOf(contents_group), include_group)
 
@@ -212,6 +219,7 @@ class ExportAnnotationsDialog(QDialog):
             return
 
         plan = self._plan
+        self.media_warning.setVisible(not self.include_media_checkbox.isChecked())
         self._sync_availability(plan)
         if self.include_project_checkbox.isChecked():
             self._add_row(f"project/{plan.project.name}.json", "project definition")

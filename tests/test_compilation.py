@@ -325,15 +325,62 @@ class ImportTests(CompCase):
         meta = json.loads((self.dst.pose_labels.base_dir / "renamed" / "metadata.json").read_text())
         self.assertEqual(meta["dataset_name"], "renamed")
 
-    def test_reimport_defaults_to_attaching_labels_to_the_datasets_you_have(self):
+    def test_reimport_defaults_to_using_what_you_already_have(self):
         root = self.export()
         self.do_import(root)
         contents = comp.inspect_compilation(root)
         sel = comp.default_compilation_selection(self.dst, contents)
-        self.assertFalse(sel.import_projects)                          # all identical to mine
+        self.assertEqual(sel.project_choices, {"proj": ("existing", "proj"), "proj2": ("existing", "proj2")})
+        self.assertFalse(sel.adds_projects(contents))                    # nothing new to add
         for name, item in sel.items.items():
             self.assertFalse(item.dataset, name)
             self.assertEqual(item.target_dataset, name)
+
+    def test_a_fresh_workspace_defaults_to_adding_every_project(self):
+        contents = comp.inspect_compilation(self.export())
+        sel = comp.default_compilation_selection(self.dst, contents)
+        self.assertEqual(sel.project_choices, {"proj": ("new", "proj"), "proj2": ("new", "proj2")})
+        self.assertTrue(sel.adds_projects(contents))
+
+    def test_a_project_can_be_added_under_a_new_name(self):
+        root = self.export()
+        contents = comp.inspect_compilation(root)
+        sel = comp.default_compilation_selection(self.dst, contents)
+        sel.project_choices["proj"] = ("new", "my_copy")
+        result, *_ = self.do_import(root, sel)
+        self.assertEqual(sorted(self.dst.projects.keys()), ["my_copy", "proj2"])
+        self.assertEqual(self.dst.projects.get("my_copy").name, "my_copy")
+        by = {p["name"]: p for p in result["projects"]}
+        self.assertEqual((by["proj"]["installed"], by["proj"]["as"]), (True, "my_copy"))
+
+    def test_a_project_can_be_mapped_onto_one_of_yours(self):
+        root = self.export()
+        self.add_project(self.dst, "mine", body_parts=["nose", "tail_base"], identities=["mouse1"], behaviors=["groom", "rear"])
+        contents = comp.inspect_compilation(root)
+        sel = comp.default_compilation_selection(self.dst, contents)
+        sel.project_choices["proj"] = ("existing", "mine")
+        result, *_ = self.do_import(root, sel)
+        self.assertEqual(sorted(self.dst.projects.keys()), ["mine", "proj2"])       # 'proj' itself was not added
+        by = {p["name"]: p for p in result["projects"]}
+        self.assertEqual((by["proj"]["installed"], by["proj"]["existing"]), (False, "mine"))
+        self.assertTrue(by["proj2"]["installed"])
+
+    def test_project_choices_are_validated(self):
+        contents = comp.inspect_compilation(self.export())
+        self.add_project(self.dst, "taken")
+        sel = comp.default_compilation_selection(self.dst, contents)
+        sel.project_choices["proj"] = ("new", "taken")
+        self.assertTrue(any("already have a project called 'taken'" in p
+                            for p in comp.validate_compilation_selection(self.dst, contents, sel)))
+        sel.project_choices["proj"] = ("new", "bad/name")
+        self.assertTrue(any("new name can't" in p for p in comp.validate_compilation_selection(self.dst, contents, sel)))
+        sel.project_choices["proj"] = ("existing", "ghost")
+        self.assertTrue(any("choose which of your projects" in p
+                            for p in comp.validate_compilation_selection(self.dst, contents, sel)))
+        sel.project_choices["proj"] = ("new", "same")
+        sel.project_choices["proj2"] = ("new", "same")
+        self.assertTrue(any("would both be saved as 'same'" in p
+                            for p in comp.validate_compilation_selection(self.dst, contents, sel)))
 
     def test_labels_merge_into_datasets_that_already_have_labels(self):
         root = self.export()

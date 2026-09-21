@@ -95,6 +95,10 @@ class ExportCompilationDialog(QDialog):
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet("color: #e67e22;")
         root.addWidget(self.notice)
+        self.media_note = QLabel("")
+        self.media_note.setWordWrap(True)
+        self.media_note.setStyleSheet("color: #e67e22;")
+        root.addWidget(self.media_note)
 
         dest = QGroupBox("Save the package to")
         g = QGridLayout(dest)
@@ -256,6 +260,12 @@ class ExportCompilationDialog(QDialog):
         copying = sum(len(self._ws.datasets.get(i.dataset_name).files) for i in items if i.include_media)
         self.summary.setText(f"{len(items)} dataset(s) ticked" + (f" · {copying} media file(s) will be copied" if copying else ""))
 
+        without_media = [i.dataset_name for i in items if not i.include_media]
+        self.media_note.setText(
+            f"{len(without_media)} dataset(s) won't include their videos/frames ({', '.join(without_media)}): whoever "
+            "imports them will be asked to find the files themselves. Leave them ticked to make the package complete."
+            if without_media else "")
+        self.media_note.setVisible(bool(without_media))
         problems = []
         if not self._ws.projects.keys():
             problems.append("This workspace has no projects, and every export records the project the dataset was labeled under. Create a project first.")

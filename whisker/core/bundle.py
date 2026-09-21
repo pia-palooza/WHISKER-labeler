@@ -50,7 +50,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from whisker.core.study.dataset import Dataset, DatasetType
 from whisker.core.study.project import Project
@@ -269,6 +269,56 @@ def _copy_or_write(src: Optional[Path], dst: Path, fallback_text: Optional[str])
         raise BundleError(f"Missing required source file: {src}")
 
 
+def format_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{n} B"
+
+
+def scan_media_sources(
+    plan: BundleExportPlan, cancel_cb: Optional[Callable[[], bool]] = None
+) -> Tuple[List[str], int]:
+    """Look at every file the export would copy: ``(missing relative paths, total bytes of
+    the files that exist)``. Follows links, so a dangling link counts as missing."""
+    missing: List[str] = []
+    total = 0
+    for rel in plan.media_rel_paths:
+        if cancel_cb and cancel_cb():
+            raise BundleError("Export cancelled.")
+        try:
+            total += (plan.media_base_path / rel).stat().st_size
+        except OSError:
+            missing.append(rel)
+    return missing, total
+
+
+def missing_media_message(plan: BundleExportPlan, missing: List[str]) -> str:
+    kind = plan.media_kind
+    sample = ", ".join(missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
+    return (
+        f"{len(missing)} of {plan.num_media} {kind} can't be found where the dataset says they are "
+        f"(for example {sample}), so a complete package can't be made. Put them back, or export "
+        f"without the {kind} (the recipient will then be asked to supply them)."
+    )
+
+
+def ensure_free_space(dest_dir: Path, needed: int) -> None:
+    """Refuse to start an export that can't fit, instead of failing half-way with a partial copy."""
+    probe = Path(dest_dir)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    required = needed + int(needed * 0.02) + 20 * 1024 * 1024        # room for labels, descriptions, slack
+    if free < required:
+        raise BundleError(
+            f"There isn't enough free space in {probe}: this export needs about {format_bytes(required)} "
+            f"but only {format_bytes(free)} is free. Free up some space or choose another location."
+        )
+
+
 def export_annotation_bundle(
     plan: BundleExportPlan,
     bundle_dir: Path,
@@ -279,17 +329,70 @@ def export_annotation_bundle(
     include_behavior: bool = True,
     progress_cb: Optional[ProgressCallback] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
+    allow_missing: bool = False,
+    preflight: bool = True,
+    verify: bool = True,
 ) -> dict:
-    """Write the bundle described by ``plan`` into ``bundle_dir``.
+    """Write the bundle described by ``plan`` into ``bundle_dir``, and make sure it is complete.
 
-    ``bundle_dir`` is the full path of the bundle folder to create (including
-    its name). Raises :class:`FileExistsError` if it already exists and
-    ``overwrite`` is False. When ``include_media`` is False the media files are
-    not copied (reference-only) and the original media path is recorded instead.
-    ``include_project`` / ``include_pose`` / ``include_behavior`` leave those parts
-    out (e.g. a small labels-only bundle to email); the importer offers only what
-    the bundle actually contains. The dataset manifest is always written.
+    ``bundle_dir`` is the full path of the bundle folder to create (including its name). Raises
+    :class:`FileExistsError` if it already exists and ``overwrite`` is False. By default the videos or
+    frames are copied in, so the package is self-contained; ``include_media=False`` makes a
+    reference-only package that records where the originals are.
+    ``include_project`` / ``include_pose`` / ``include_behavior`` leave those parts out (e.g. a small
+    labels-only bundle to email); the importer offers only what the bundle actually contains. The
+    dataset manifest is always written.
+
+    A package is only ever left behind if it is complete:
+
+    * before anything is written, every file to copy is checked to exist and the destination is checked
+      to have room (``preflight``); a missing file raises :class:`BundleError` naming some of them,
+      unless ``allow_missing`` is set;
+    * each copy is checked to be the same size as its original;
+    * any failure or cancellation removes the partly written folder;
+    * afterwards the finished package is read back the way the importer will read it (``verify``), and
+      ``result["problems"]`` lists anything that wouldn't import (empty means complete).
     """
+    bundle_dir = Path(bundle_dir)
+    if bundle_dir.exists() and not overwrite:
+        raise FileExistsError(f"Destination already exists: {bundle_dir}")
+
+    if include_media and preflight:
+        if progress_cb:
+            progress_cb("Checking the files to copy...", 0)
+        missing_sources, needed = scan_media_sources(plan, cancel_cb)
+        if missing_sources and not allow_missing:
+            raise BundleError(missing_media_message(plan, missing_sources))
+        ensure_free_space(bundle_dir.parent, needed)
+
+    try:
+        result = _write_bundle(
+            plan, bundle_dir, overwrite, include_media, include_project, include_pose, include_behavior,
+            progress_cb, cancel_cb, allow_missing,
+        )
+    except BaseException:
+        shutil.rmtree(bundle_dir, ignore_errors=True)        # never leave a partly written package behind
+        raise
+
+    result["problems"] = []
+    if verify:
+        from whisker.core import bundle_import          # imported here: bundle_import itself imports this module
+        result["problems"] = bundle_import.verify_export(bundle_dir)
+    return result
+
+
+def _write_bundle(
+    plan: BundleExportPlan,
+    bundle_dir: Path,
+    overwrite: bool,
+    include_media: bool,
+    include_project: bool,
+    include_pose: bool,
+    include_behavior: bool,
+    progress_cb: Optional[ProgressCallback],
+    cancel_cb: Optional[Callable[[], bool]],
+    allow_missing: bool,
+) -> dict:
 
     def _progress(msg: str, pct: int):
         if progress_cb:
@@ -298,11 +401,8 @@ def export_annotation_bundle(
     def _cancelled() -> bool:
         return bool(cancel_cb and cancel_cb())
 
-    bundle_dir = Path(bundle_dir)
     if bundle_dir.exists():
-        if not overwrite:
-            raise FileExistsError(f"Destination already exists: {bundle_dir}")
-        shutil.rmtree(bundle_dir)
+        shutil.rmtree(bundle_dir)          # overwrite was already checked by the caller
 
     _progress("Preparing bundle...", 0)
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -392,8 +492,12 @@ def export_annotation_bundle(
             dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.copy2(src, dst)
+                if dst.stat().st_size != src.stat().st_size:
+                    raise OSError(f"the copy is {dst.stat().st_size} bytes but the original is {src.stat().st_size}")
                 copied += 1
             except (OSError, shutil.Error) as e:
+                if not allow_missing:
+                    raise BundleError(f"Could not copy '{rel}' into the package: {e}") from e
                 logger.warning("Could not copy media %s: %s", src, e)
                 missing.append(rel)
             if total and (i % 5 == 0 or i == total - 1):

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from fixtures import (
-    BEHAVIORS, WorkspaceCase, frame_names, make_behavior_dataset, make_pose_dataset,
+    BEHAVIORS, BODY_PARTS, WorkspaceCase, frame_names, make_behavior_dataset, make_pose_dataset,
 )
 from whisker.core import bundle_import as bi
 from whisker.core.bundle_import import ImportSelection, LabelPolicy
@@ -88,7 +88,7 @@ class LocateTests(BundleCase):
     def test_hand_made_json_folder_points_to_manual_mode(self):
         (self.tmp / "loose").mkdir()
         (self.tmp / "loose" / "manifest.json").write_text("{}")
-        self.assertIn("Pick pieces manually", bi.locate_bundle(self.tmp / "loose").message)
+        self.assertIn("Import from separate files", bi.locate_bundle(self.tmp / "loose").message)
 
     def test_missing_path(self):
         self.assertIn("doesn't exist", bi.locate_bundle(self.tmp / "nope").message)
@@ -244,16 +244,78 @@ class SubsetImportTests(BundleCase):
         self.assertEqual(bi.validate_selection(self.dst, c, self.sel(dataset=True, overwrite_dataset=True)), [])
         self.assertEqual(bi.validate_selection(self.dst, c, self.sel(dataset=True, dataset_name="d1_2")), [])
 
-    def test_existing_project_is_kept_unless_replacing(self):
+    def test_a_new_project_can_be_saved_under_another_name(self):
+        self.run_import(self.sel(project=True, project_name="renamed_proj"))
+        self.assertEqual(sorted(self.dst.projects.keys()), ["renamed_proj"])
+        p = self.dst.projects.get("renamed_proj")
+        self.assertEqual(p.name, "renamed_proj")                      # the name *inside* the file changed too
+        self.assertEqual((p.body_parts, p.behaviors), (BODY_PARTS, BEHAVIORS))
+
+    def test_a_taken_project_name_needs_another_name_or_replace(self):
         self.run_import(self.sel(project=True))
-        mine = self.dst.projects.get("proj")
-        (self.dst.projects.base_dir / "proj.json").write_text(mine.model_copy(update={"behaviors": ["x"]}).model_dump_json())
-        r = self.run_import(self.sel(project=True))
-        self.assertFalse(r["project_installed"])
-        self.assertIn("Kept your existing project", r["notes"][0])
-        self.assertEqual(self.dst.projects.get("proj").behaviors, ["x"])
-        self.assertTrue(self.run_import(self.sel(project=True, overwrite_project=True))["project_installed"])
+        c = bi.inspect_bundle(self.bundle)
+        problems = bi.validate_selection(self.dst, c, self.sel(project=True))
+        self.assertIn("already have a project called 'proj'", problems[0])
+        self.assertEqual(bi.validate_selection(self.dst, c, self.sel(project=True, project_name="proj_2")), [])
+        self.assertEqual(bi.validate_selection(self.dst, c, self.sel(project=True, overwrite_project=True)), [])
+        (self.dst.projects.base_dir / "proj.json").write_text(
+            self.dst.projects.get("proj").model_copy(update={"behaviors": ["x"]}).model_dump_json())
+        self.rescan()
+        self.run_import(self.sel(project=True, overwrite_project=True))
         self.assertEqual(self.dst.projects.get("proj").behaviors, BEHAVIORS)
+
+    def test_bad_project_names_are_refused(self):
+        c = bi.inspect_bundle(self.bundle)
+        for bad in ("a/b", "what?", "trail."):
+            problems = bi.validate_selection(self.dst, c, self.sel(project=True, project_name=bad))
+            self.assertTrue(problems and "project name can't" in problems[0], bad)
+        # surrounding spaces are trimmed, not refused
+        self.assertEqual(bi.validate_selection(self.dst, c, self.sel(project=True, project_name="  padded  ")), [])
+        self.run_import(self.sel(project=True, project_name="  padded  "))
+        self.assertEqual(list(self.dst.projects.keys()), ["padded"])
+
+    def test_using_an_existing_project_installs_nothing_and_says_what_it_lacks(self):
+        self.add_project(self.dst, "mine", body_parts=["nose"], identities=["mouse1"], behaviors=["groom"])
+        r = self.run_import(self.sel(project=True, project_mode="existing", existing_project="mine",
+                                     dataset=True, pose=True, behavior=True))
+        self.assertEqual(sorted(self.dst.projects.keys()), ["mine"])          # the export's project was NOT added
+        self.assertEqual((r["project_name"], r["project_installed"], r["project_existing"]), ("mine", False, True))
+        notes = " ".join(r["notes"])
+        self.assertIn("Using your existing project 'mine'", notes)
+        self.assertIn("body parts tail_base", notes)
+        self.assertIn("behaviors rear", notes)
+        self.assertTrue(self.dst.pose_labels.has_pose_labels("d1"))             # the rest imported as normal
+
+    def test_using_a_project_that_covers_the_labels_says_nothing_about_gaps(self):
+        self.add_project(self.dst, "mine")                                     # same body parts / identities / behaviors
+        r = self.run_import(self.sel(project=True, project_mode="existing", existing_project="mine", dataset=True, pose=True))
+        self.assertEqual(r["notes"], ["Using your existing project 'mine'."])
+
+    def test_an_existing_project_on_its_own_imports_nothing_and_says_so(self):
+        self.add_project(self.dst, "mine")
+        c = bi.inspect_bundle(self.bundle)
+        problems = bi.validate_selection(self.dst, c, self.sel(project=True, project_mode="existing", existing_project="mine"))
+        self.assertIn("imports nothing", problems[0])
+
+    def test_an_existing_project_must_actually_exist(self):
+        c = bi.inspect_bundle(self.bundle)
+        for missing in ("", "ghost"):
+            problems = bi.validate_selection(self.dst, c, self.sel(project=True, project_mode="existing",
+                                                                   existing_project=missing, dataset=True))
+            self.assertIn("Choose which of your projects to use.", problems)
+
+    def test_project_gaps(self):
+        self.add_project(self.dst, "mine", body_parts=["nose", "tail_base"], identities=["other"], behaviors=["groom", "rear"])
+        c = bi.inspect_bundle(self.bundle)
+        self.assertEqual(bi.project_gaps(self.dst, c, "mine"), ["identities mouse1"])
+        self.assertEqual(bi.project_gaps(self.dst, c, "mine", pose=False), [])
+        self.assertEqual(bi.project_gaps(self.dst, c, "nope"), [])
+
+    def test_unique_project_names(self):
+        self.add_project(self.dst, "proj")
+        self.add_project(self.dst, "proj_2")
+        self.assertEqual(bi.unique_project_name(self.dst, "proj"), "proj_3")
+        self.assertEqual(bi.unique_project_name(self.dst, "fresh"), "fresh")
 
 
 # --------------------------------------------------------- default selection
@@ -266,16 +328,23 @@ class DefaultSelectionTests(BundleCase):
         self.assertEqual(sel.dataset_name, "d1")
         self.assertEqual(bi.validate_selection(self.dst, bi.inspect_bundle(self.bundle), sel), [])
 
-    def test_reimporting_defaults_to_attaching_labels_to_the_dataset_you_already_have(self):
+    def test_reimporting_defaults_to_using_what_you_already_have(self):
         self.run_import(ImportSelection(project=True, dataset=True, dataset_name="d1"))
         c = bi.inspect_bundle(self.bundle)
         sel = bi.default_selection(self.dst, c)
+        # the project: use mine (offered, ticked), with a free name ready in case they'd rather add a copy
+        self.assertTrue(sel.project)
+        self.assertEqual((sel.project_mode, sel.existing_project, sel.project_name), ("existing", "proj", "proj_2"))
+        # the dataset: labels attach to mine, its media aren't copied again
         self.assertFalse(sel.dataset)
-        self.assertFalse(sel.project)                                   # identical to mine
         self.assertTrue(sel.pose and sel.behavior)
         self.assertEqual(sel.target_dataset, "d1")
-        self.assertEqual(sel.dataset_name, "d1_2")                      # if they do tick the dataset
+        self.assertEqual(sel.dataset_name, "d1_2")                      # if they choose to add it as new
         self.assertEqual(bi.project_relation(self.dst, c), "identical")
+
+    def test_a_fresh_workspace_defaults_to_adding_the_project_as_new(self):
+        sel = bi.default_selection(self.dst, bi.inspect_bundle(self.bundle))
+        self.assertEqual((sel.project, sel.project_mode, sel.project_name, sel.existing_project), (True, "new", "proj", ""))
 
     def test_project_relation_detects_a_different_definition(self):
         self.run_import(ImportSelection(project=True))

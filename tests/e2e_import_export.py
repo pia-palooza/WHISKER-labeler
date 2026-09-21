@@ -205,6 +205,10 @@ def drive_labels_only():
     d = modal()
     d.set_path(str(bundle))
     print("   defaults:", {k: c.isChecked() for k, (c, _n) in d._rows.items()}, "| button:", d.import_btn.text())
+    check(d.project_existing_radio.isChecked() and d.project_combo.currentData() == "proj",
+          "re-import starts on 'use my existing project'")
+    check(d.dataset_existing_radio.isChecked() and d.dataset_combo.currentData() == "openfield",
+          "re-import starts on 'use my existing dataset'")
     QTimer.singleShot(300, attach_step)
     d.import_btn.click()
 
@@ -243,9 +247,61 @@ QTimer.singleShot(400, drive_export)
 mw._export_annotations()
 wait_for(lambda: any(m[0] == "information" for m in messages), what="export-complete message")
 print("   message shown:\n      " + [m for m in messages if m[0] == "information"][-1][2].replace("\n", "\n      "))
+check("Checked: everything the import tool needs is in the package" in [m for m in messages if m[0] == "information"][-1][2],
+      "the export message says the package was checked")
 out = out_parent / "openfield_labels"
 check((out / "export_info.json").exists() and not (out / "frames").exists(), "labels-only export written (no frames folder)")
 check(bi.inspect_bundle(out).pose.ok, "...and it re-imports cleanly")
+
+# ---- 3b. IMPORT FROM SEPARATE FILES: use my active project and an existing dataset, browse only for the labels
+loose = tmp / "loose_labels"
+loose.mkdir()
+make_pose_dataset(files[4:6], x0=77.0).to_file(loose / "labels.h5")          # frames 4-5 at x=77, not from an Export
+projects_before = sorted(ws.projects.keys())
+messages.clear()
+
+
+def separate_attach_step():
+    a = modal()
+    print("   follow-up:", a.windowTitle())
+    check(not a.dataset_combo.isVisibleTo(a), "the follow-up doesn't ask which dataset again")
+    next(r for r in a.findChildren(QRadioButton) if "use the imported one" in r.text()).setChecked(True)
+    a.ok_btn.click()
+
+
+def separate_files_step():
+    d = modal()
+    print("   dialog:", type(d).__name__)
+    check(d.project_existing_radio.isChecked() and d.project_combo.currentData() == "myproject",
+          "separate files: the ACTIVE project is preselected from the list")
+    d.pose_edit.setText(str(loose / "labels.h5"))
+    check(d.dataset_existing_radio.isChecked() and d.dataset_combo.currentData() == "openfield",
+          "separate files: the existing dataset that fits the labels is preselected")
+    check(not d.project_edit.isEnabled() and not d.dataset_edit.isEnabled(),
+          "separate files: no project/dataset file to dig for")
+    check(d.import_btn.isEnabled(), "separate files: importable with just the labels file")
+    QTimer.singleShot(300, separate_attach_step)
+    d.import_btn.click()
+
+
+def pick_separate_files():
+    d = modal()
+    check(d.manual_btn.text() == "Import from separate files...", "the button says what it does")
+    QTimer.singleShot(500, separate_files_step)
+    d.manual_btn.click()
+
+
+QTimer.singleShot(400, pick_separate_files)
+mw._import_bundle_action.trigger()
+wait_for(lambda: any(m[0] == "information" for m in messages), what="separate-files import message")
+text = [m for m in messages if m[0] == "information"][-1][2]
+print("   message shown:\n      " + text.replace("\n", "\n      "))
+pump(0.5)
+merged = PoseDataset.from_file(ws.pose_labels.base_dir / "openfield" / "labels.h5")
+check(float(merged.keypoint_data.xs(("frame_0005.png", "mouse1", "nose"))["x"]) == 77.0, "the imported labels landed on the existing dataset")
+check(sorted(ws.projects.keys()) == projects_before, "no project was added: the existing one was used")
+check("Using your existing project 'myproject'" in text, "the message says the existing project was used")
+check(not [m for m in messages if m[0] in ("warning", "critical")], "no warnings or errors shown")
 
 # ---- 4. COMPILATION: export several datasets from this workspace ...
 check(mw._export_compilation_action.isEnabled(), "Export Several Datasets... is enabled")
@@ -272,6 +328,8 @@ QTimer.singleShot(400, drive_comp_export)
 mw._export_compilation_action.trigger()
 wait_for(lambda: any(m[0] == "information" for m in messages), what="compilation-export message")
 print("   message shown:\n      " + [m for m in messages if m[0] == "information"][-1][2].replace("\n", "\n      "))
+check("Checked: everything the import tool needs is in every dataset's folder" in [m for m in messages if m[0] == "information"][-1][2],
+      "the compilation message says every dataset was checked")
 shared = share_parent / "labshare"
 from whisker.core import compilation as comp
 check((shared / "compilation_info.json").exists() and (shared / "openfield" / "export_info.json").exists()

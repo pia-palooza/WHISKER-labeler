@@ -155,9 +155,28 @@ def export_compilation(
             f"'{name}' can't be used as a folder name. Avoid \\ / : * ? \" < > | and leading or trailing spaces and dots."
         )
     root = Path(dest_dir) / name.strip()
+    if root.exists() and not overwrite:
+        raise FileExistsError(f"Destination already exists: {root}")
+
+    # Check everything up front, across every dataset, so nothing is written (and an existing package
+    # isn't replaced) unless the whole compilation can be made complete.
+    if any(item.include_media for item in items):
+        if progress_cb:
+            progress_cb("Checking the files to copy...", 0)
+        problems: List[str] = []
+        needed = 0
+        for item, plan in zip(items, plans):
+            if not item.include_media:
+                continue
+            missing_sources, size = fmt.scan_media_sources(plan, cancel_cb)
+            needed += size
+            if missing_sources:
+                problems.append(f"'{plan.dataset.name}': " + fmt.missing_media_message(plan, missing_sources))
+        if problems:
+            raise fmt.BundleError("A complete package can't be made.\n" + "\n".join(problems))
+        fmt.ensure_free_space(Path(dest_dir), needed)
+
     if root.exists():
-        if not overwrite:
-            raise FileExistsError(f"Destination already exists: {root}")
         shutil.rmtree(root)
 
     def progress(msg: str, pct: int):
@@ -186,7 +205,7 @@ def export_compilation(
                 plan, root / folder, overwrite=False,
                 include_media=item.include_media, include_project=True,
                 include_pose=item.include_pose, include_behavior=item.include_behavior,
-                progress_cb=inner_progress, cancel_cb=cancel_cb,
+                progress_cb=inner_progress, cancel_cb=cancel_cb, preflight=False,   # checked above, across all datasets
             )
             done_weight += weight
             results.append({"dataset_name": plan.dataset.name, **result})
@@ -229,6 +248,7 @@ def export_compilation(
         "num_media": sum(r["num_media"] for r in results),
         "num_media_copied": sum(r["num_media_copied"] for r in results),
         "num_missing": sum(r["num_missing"] for r in results),
+        "problems": [f"'{r['dataset_name']}': {p}" for r in results for p in r["problems"]],
     }
 
 
@@ -357,6 +377,9 @@ def inspect_compilation(root: Path) -> CompilationContents:
 class CompilationSelection:
     items: Dict[str, ImportSelection] = field(default_factory=dict)   # by dataset name in the compilation
     import_projects: bool = True
+    # For each project the compilation uses: ("new", the name to save it as) or ("existing",
+    # one of your own projects to use instead). A project with no entry is added under its own name.
+    project_choices: Dict[str, Tuple[str, str]] = field(default_factory=dict)
     overwrite_projects: bool = False
     existing_labels_policy: LabelPolicy = LabelPolicy.MERGE_EXISTING   # when a dataset already has labels
     keep_unmatched: bool = False
@@ -364,23 +387,29 @@ class CompilationSelection:
     def active_items(self) -> Dict[str, ImportSelection]:
         return {n: s for n, s in self.items.items() if s.dataset or s.pose or s.behavior}
 
+    def choice_for(self, project_name: str) -> Tuple[str, str]:
+        return self.project_choices.get(project_name, ("new", project_name))
+
+    def adds_projects(self, contents: "CompilationContents") -> bool:
+        return self.import_projects and any(self.choice_for(p)[0] == "new" for p in contents.project_names)
+
 
 def default_compilation_selection(workspace, contents: CompilationContents) -> CompilationSelection:
     sel = CompilationSelection()
-    new_project = False
     for e in contents.entries:
         if not e.ok:
             sel.items[e.name] = ImportSelection(dataset_name=e.name)
             continue
         s = bi.default_selection(workspace, e.contents)
-        if e.contents.project.ok and bi.project_relation(workspace, e.contents) == "new":
-            new_project = True
         s.project = False                       # projects are handled once, for the whole compilation
         if not s.dataset and (s.pose or s.behavior):
             # In a compilation the natural home for labels is the dataset of the same name.
             s.target_dataset = e.name if workspace.datasets.get(e.name) is not None else ""
         sel.items[e.name] = s
-    sel.import_projects = new_project
+    for name in contents.project_names:
+        # A project you already have is used as it is; otherwise it's added under its own name.
+        sel.project_choices[name] = ("existing", name) if workspace.projects.get(name) is not None else ("new", name)
+    sel.import_projects = bool(contents.project_names)
     return sel
 
 
@@ -393,9 +422,9 @@ def _item_for_import(item: ImportSelection) -> ImportSelection:
 def validate_compilation_selection(workspace, contents: CompilationContents, sel: CompilationSelection) -> List[str]:
     problems: List[str] = []
     active = sel.active_items()
-    projects_wanted = sel.import_projects and bool(contents.project_names)
-    if not active and not projects_wanted:
+    if not active and not sel.adds_projects(contents):
         return ["Tick at least one thing to import."]
+    problems.extend(_project_problems(workspace, contents, sel))
     new_names: Dict[str, str] = {}
     for e in contents.entries:
         item = active.get(e.name)
@@ -411,6 +440,29 @@ def validate_compilation_selection(workspace, contents: CompilationContents, sel
             if key in new_names:
                 problems.append(f"'{e.name}' and '{new_names[key]}' would both be imported as '{item.dataset_name.strip()}'.")
             new_names[key] = e.name
+    return problems
+
+
+def _project_problems(workspace, contents: CompilationContents, sel: CompilationSelection) -> List[str]:
+    problems: List[str] = []
+    if not sel.import_projects:
+        return problems
+    taken: Dict[str, str] = {}
+    for name in contents.project_names:
+        mode, target = sel.choice_for(name)
+        target = target.strip()
+        if mode == "existing":
+            if workspace.projects.get(target) is None:
+                problems.append(f"Project '{name}': choose which of your projects to use.")
+        elif not bi.is_valid_name(target):
+            problems.append(f"Project '{name}': the new name can't be empty or contain \\ / : * ? \" < > |.")
+        elif workspace.projects.get(target) is not None and not sel.overwrite_projects:
+            problems.append(f"Project '{name}': you already have a project called '{target}' \u2014 "
+                            "choose another name or use your existing one.")
+        elif target.lower() in taken:
+            problems.append(f"Projects '{taken[target.lower()]}' and '{name}' would both be saved as '{target}'.")
+        else:
+            taken[target.lower()] = name
     return problems
 
 
@@ -506,8 +558,13 @@ def import_compilation(
             if proj.name in done:
                 continue
             done.add(proj.name)
-            installed = mi.install_project(workspace, proj, e.contents.project.path, sel.overwrite_projects)
-            out["projects"].append({"name": proj.name, "installed": installed})
+            mode, target = sel.choice_for(proj.name)
+            if mode == "existing":
+                out["projects"].append({"name": proj.name, "installed": False, "existing": target})
+                continue
+            installed = mi.install_project(workspace, proj, e.contents.project.path, sel.overwrite_projects,
+                                           name=target.strip())
+            out["projects"].append({"name": proj.name, "installed": installed, "as": target.strip()})
 
     active = [(e, sel.active_items()[e.name]) for e in contents.entries if e.name in sel.active_items()]
     n = len(active)
