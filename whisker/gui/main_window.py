@@ -34,7 +34,7 @@ from whisker.gui.dialogs.warn_if_exists_dialog import WarnIfExistsDialog
 from whisker.gui.tabs import BaseTab
 from whisker.third_party.server_manager import get_server_manager
 from whisker.gui.signals import MessageBus
-from whisker.gui.dialogs import SettingsDialog
+from whisker.gui.dialogs import SettingsDialog, InstallShortcutDialog
 from whisker.gui.widgets.help_window import HelpWindow
 from whisker.gui.widgets.console import ConsoleWidget
 from whisker.gui.panels.navigation_panel import NavigationPanel
@@ -210,7 +210,14 @@ class MainWindow(QMainWindow):
         self._new_ds_action.triggered.connect(self.data_explorer.show_create_dataset_dialog)
         file_menu.addAction(self._new_ds_action)
         
-        self._import_labels_action = QAction("Import Pose Labels...", self)
+        self._import_bundle_action = QAction("Import...", self)
+        # Not Ctrl+I: the pose labeling screen uses that to swap identities.
+        self._import_bundle_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self._import_bundle_action.setToolTip("Import an exported dataset, project, labels or media")
+        self._import_bundle_action.triggered.connect(self.data_explorer.show_import_dataset_dialog)
+        file_menu.addAction(self._import_bundle_action)
+
+        self._import_labels_action = QAction("Import Labels from Other Software...", self)
         self._import_labels_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
         self._import_labels_action.triggered.connect(self.data_explorer.show_import_pose_labels_dialog)
         file_menu.addAction(self._import_labels_action)
@@ -243,10 +250,15 @@ class MainWindow(QMainWindow):
         export_menu = QMenu("Export", self)
         file_menu.addMenu(export_menu)
         
-        self._export_labels_action = QAction("Export Annotations...", self)
+        self._export_labels_action = QAction("Export Dataset / Labels...", self)
         self._export_labels_action.triggered.connect(self._export_annotations)
         export_menu.addAction(self._export_labels_action)
         
+        self._export_compilation_action = QAction("Export Several Datasets...", self)
+        self._export_compilation_action.setToolTip("Put several datasets, with their labels, into one package")
+        self._export_compilation_action.triggered.connect(self._export_compilation)
+        export_menu.addAction(self._export_compilation_action)
+
         self._export_charts_action = QAction("Export Charts (.png)...", self)
         self._export_charts_action.triggered.connect(self._export_behavior_charts)
         export_menu.addAction(self._export_charts_action)
@@ -405,6 +417,12 @@ class MainWindow(QMainWindow):
         self._run_jobs_action.triggered.connect(lambda: self._switch_to_task_for_current_workflow("❖ Jobs"))
         tools_menu.addAction(self._run_jobs_action)
 
+        tools_menu.addSeparator()
+
+        install_shortcut_action = QAction("Install Desktop Shortcut...", self)
+        install_shortcut_action.triggered.connect(self._show_install_shortcut_dialog)
+        tools_menu.addAction(install_shortcut_action)
+
         # --- Help Menu ---
         help_menu = menu_bar.addMenu("Help")
         
@@ -547,6 +565,10 @@ class MainWindow(QMainWindow):
         # Handle workspace set request from Settings dialog
         bus.subscribe("request/workspace/set", lambda t, p: self.set_workspace(Path(p["path"])))
 
+        # Menu items such as Export depend on whether the workspace has datasets, so
+        # re-evaluate them when datasets are added or removed (e.g. by an import).
+        bus.subscribe("workspace/datasets/refreshed", lambda t, p: self._update_menu_actions_state())
+
         # Update action states on model run or workflow changes
         bus.subscribe("selection/model_run/changed", lambda t, p: self._update_menu_actions_state())
         bus.subscribe("gui/request/workflow_selected", lambda t, p: self._update_menu_actions_state())
@@ -636,7 +658,7 @@ class MainWindow(QMainWindow):
             widget.request_set_workspace.connect(self._show_set_workspace_dialog)
             widget.request_create_project.connect(self.data_explorer.show_create_project_dialog)
             widget.request_create_dataset.connect(self.data_explorer.show_create_dataset_dialog)
-            widget.request_import_labels.connect(self.data_explorer.show_import_pose_labels_dialog)
+            widget.request_import.connect(self.data_explorer.show_import_dataset_dialog)
             
         # Connect general signals if present
         if hasattr(widget, "dirty_state_changed"):
@@ -761,6 +783,7 @@ class MainWindow(QMainWindow):
         self._new_proj_action.setEnabled(has_workspace)
         self._open_ws_action.setEnabled(True)
         self._new_ds_action.setEnabled(has_workspace and has_project)
+        self._import_bundle_action.setEnabled(has_workspace)
         self._import_labels_action.setEnabled(has_workspace and has_project)
         self._create_detector_action.setEnabled(has_workspace and has_project)
         self._refresh_ws_action.setEnabled(has_workspace)
@@ -775,7 +798,9 @@ class MainWindow(QMainWindow):
             model_run = self.data_explorer.action_handler._current_model_run or ""
         has_model_run = bool(model_run)
         
-        self._export_labels_action.setEnabled(has_workspace and has_dataset)
+        has_any_dataset = has_workspace and bool(self._workspace.datasets.keys())
+        self._export_labels_action.setEnabled(has_any_dataset)
+        self._export_compilation_action.setEnabled(has_any_dataset)
         self._export_charts_action.setEnabled(has_workspace and has_dataset and has_model_run)
         self._export_jitter_action.setEnabled(has_workspace and has_dataset and has_model_run)
         self._export_bouts_action.setEnabled(has_workspace and has_dataset and has_model_run)
@@ -810,10 +835,31 @@ class MainWindow(QMainWindow):
         bus.publish("request/workspace/models/refresh")
         bus.publish("request/workspace/predictions/refresh")
 
+    def _choose_dataset_to_export(self) -> Optional[str]:
+        """The selected dataset if there is one; otherwise ask, so Export never needs a
+        dataset to be selected in the explorer first."""
+        names = sorted(self._workspace.datasets.keys()) if self._workspace else []
+        if not names:
+            QMessageBox.information(self, "Export", "This workspace has no datasets to export yet.")
+            return None
+        if len(names) == 1:
+            return names[0]
+        name, accepted = QInputDialog.getItem(
+            self, "Export", "Which dataset do you want to export?", names, 0, False
+        )
+        return name if accepted else None
+
     def _export_annotations(self):
         dataset_name, _ = self._get_active_dataset_and_video()
+        if not dataset_name:
+            dataset_name = self._choose_dataset_to_export()
         if dataset_name and hasattr(self.data_explorer, "action_handler"):
             self.data_explorer.action_handler._export_annotations(dataset_name)
+
+    def _export_compilation(self):
+        dataset_name, _ = self._get_active_dataset_and_video()
+        if hasattr(self.data_explorer, "action_handler"):
+            self.data_explorer.action_handler.show_export_compilation_dialog(preselect=dataset_name)
 
     def _export_behavior_charts(self):
         dataset_name, _ = self._get_active_dataset_and_video()
@@ -1016,6 +1062,9 @@ class MainWindow(QMainWindow):
                 "No Log File Found",
                 "There is no active session log file for this workspace currently running."
             )
+
+    def _show_install_shortcut_dialog(self):
+        InstallShortcutDialog(self).exec()
 
     def _show_about_dialog(self):
         msg = (

@@ -10,7 +10,7 @@ Layout on disk::
     <export_name>/
         export_info.json          # machine-readable description of the export
         README.txt                # human-readable summary + exact import paths
-        project/
+        project/                  # omitted if the project wasn't included
             <project_name>.json   # the Project definition
         dataset/
             manifest.json         # the Dataset manifest (incl. multi-arena config)
@@ -27,12 +27,15 @@ reference-only export records the original media paths instead of copying the
 (potentially very large) video files, and whoever imports it supplies the
 video files themselves.
 
-Importing back into whisker-labeler does **not** treat this folder as one
-opaque unit — see :mod:`whisker.core.manual_import`, which has the recipient
-browse to each piece (project file, dataset info file, media folder, label
-files) individually and validates each one as soon as it's picked. That's
-why ``export_info.json``/README.txt spell out the exact relative path to each
-piece: so whoever's importing can just follow them field by field.
+Any part can be left out at export time (``include_project`` / ``include_pose`` /
+``include_behavior`` / ``include_media``), e.g. for a small labels-only bundle;
+``export_info.json`` records what is present.
+
+Importing is one pick: see :mod:`whisker.core.bundle_import`, which finds this
+folder from any folder or file inside (or containing) it via ``export_info.json``,
+shows what it holds, and imports whichever parts the user ticks — attaching labels
+to an existing dataset, with replace/merge, when they arrive without their media.
+:mod:`whisker.core.manual_import` remains for hand-assembled files.
 
 The functions here perform *only* filesystem work (read + copy + write). They
 never touch Qt and never mutate the in-memory workspace, so callers can run
@@ -47,7 +50,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from whisker.core.study.dataset import Dataset, DatasetType
 from whisker.core.study.project import Project
@@ -64,6 +67,8 @@ GENERATOR = "whisker-labeler"
 
 EXPORT_INFO_FILENAME = "export_info.json"
 README_FILENAME = "README.txt"
+# A compilation is a folder of several exports (see whisker.core.compilation); this marks it.
+COMPILATION_INFO_FILENAME = "compilation_info.json"
 
 PROJECT_DIRNAME = "project"
 DATASET_DIRNAME = "dataset"
@@ -264,21 +269,130 @@ def _copy_or_write(src: Optional[Path], dst: Path, fallback_text: Optional[str])
         raise BundleError(f"Missing required source file: {src}")
 
 
+def format_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{n} B"
+
+
+def scan_media_sources(
+    plan: BundleExportPlan, cancel_cb: Optional[Callable[[], bool]] = None
+) -> Tuple[List[str], int]:
+    """Look at every file the export would copy: ``(missing relative paths, total bytes of
+    the files that exist)``. Follows links, so a dangling link counts as missing."""
+    missing: List[str] = []
+    total = 0
+    for rel in plan.media_rel_paths:
+        if cancel_cb and cancel_cb():
+            raise BundleError("Export cancelled.")
+        try:
+            total += (plan.media_base_path / rel).stat().st_size
+        except OSError:
+            missing.append(rel)
+    return missing, total
+
+
+def missing_media_message(plan: BundleExportPlan, missing: List[str]) -> str:
+    kind = plan.media_kind
+    sample = ", ".join(missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
+    return (
+        f"{len(missing)} of {plan.num_media} {kind} can't be found where the dataset says they are "
+        f"(for example {sample}), so a complete package can't be made. Put them back, or export "
+        f"without the {kind} (the recipient will then be asked to supply them)."
+    )
+
+
+def ensure_free_space(dest_dir: Path, needed: int) -> None:
+    """Refuse to start an export that can't fit, instead of failing half-way with a partial copy."""
+    probe = Path(dest_dir)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    required = needed + int(needed * 0.02) + 20 * 1024 * 1024        # room for labels, descriptions, slack
+    if free < required:
+        raise BundleError(
+            f"There isn't enough free space in {probe}: this export needs about {format_bytes(required)} "
+            f"but only {format_bytes(free)} is free. Free up some space or choose another location."
+        )
+
+
 def export_annotation_bundle(
     plan: BundleExportPlan,
     bundle_dir: Path,
     overwrite: bool = False,
     include_media: bool = True,
+    include_project: bool = True,
+    include_pose: bool = True,
+    include_behavior: bool = True,
     progress_cb: Optional[ProgressCallback] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
+    allow_missing: bool = False,
+    preflight: bool = True,
+    verify: bool = True,
 ) -> dict:
-    """Write the bundle described by ``plan`` into ``bundle_dir``.
+    """Write the bundle described by ``plan`` into ``bundle_dir``, and make sure it is complete.
 
-    ``bundle_dir`` is the full path of the bundle folder to create (including
-    its name). Raises :class:`FileExistsError` if it already exists and
-    ``overwrite`` is False. When ``include_media`` is False the media files are
-    not copied (reference-only) and the original media path is recorded instead.
+    ``bundle_dir`` is the full path of the bundle folder to create (including its name). Raises
+    :class:`FileExistsError` if it already exists and ``overwrite`` is False. By default the videos or
+    frames are copied in, so the package is self-contained; ``include_media=False`` makes a
+    reference-only package that records where the originals are.
+    ``include_project`` / ``include_pose`` / ``include_behavior`` leave those parts out (e.g. a small
+    labels-only bundle to email); the importer offers only what the bundle actually contains. The
+    dataset manifest is always written.
+
+    A package is only ever left behind if it is complete:
+
+    * before anything is written, every file to copy is checked to exist and the destination is checked
+      to have room (``preflight``); a missing file raises :class:`BundleError` naming some of them,
+      unless ``allow_missing`` is set;
+    * each copy is checked to be the same size as its original;
+    * any failure or cancellation removes the partly written folder;
+    * afterwards the finished package is read back the way the importer will read it (``verify``), and
+      ``result["problems"]`` lists anything that wouldn't import (empty means complete).
     """
+    bundle_dir = Path(bundle_dir)
+    if bundle_dir.exists() and not overwrite:
+        raise FileExistsError(f"Destination already exists: {bundle_dir}")
+
+    if include_media and preflight:
+        if progress_cb:
+            progress_cb("Checking the files to copy...", 0)
+        missing_sources, needed = scan_media_sources(plan, cancel_cb)
+        if missing_sources and not allow_missing:
+            raise BundleError(missing_media_message(plan, missing_sources))
+        ensure_free_space(bundle_dir.parent, needed)
+
+    try:
+        result = _write_bundle(
+            plan, bundle_dir, overwrite, include_media, include_project, include_pose, include_behavior,
+            progress_cb, cancel_cb, allow_missing,
+        )
+    except BaseException:
+        shutil.rmtree(bundle_dir, ignore_errors=True)        # never leave a partly written package behind
+        raise
+
+    result["problems"] = []
+    if verify:
+        from whisker.core import bundle_import          # imported here: bundle_import itself imports this module
+        result["problems"] = bundle_import.verify_export(bundle_dir)
+    return result
+
+
+def _write_bundle(
+    plan: BundleExportPlan,
+    bundle_dir: Path,
+    overwrite: bool,
+    include_media: bool,
+    include_project: bool,
+    include_pose: bool,
+    include_behavior: bool,
+    progress_cb: Optional[ProgressCallback],
+    cancel_cb: Optional[Callable[[], bool]],
+    allow_missing: bool,
+) -> dict:
 
     def _progress(msg: str, pct: int):
         if progress_cb:
@@ -287,20 +401,18 @@ def export_annotation_bundle(
     def _cancelled() -> bool:
         return bool(cancel_cb and cancel_cb())
 
-    bundle_dir = Path(bundle_dir)
     if bundle_dir.exists():
-        if not overwrite:
-            raise FileExistsError(f"Destination already exists: {bundle_dir}")
-        shutil.rmtree(bundle_dir)
+        shutil.rmtree(bundle_dir)          # overwrite was already checked by the caller
 
     _progress("Preparing bundle...", 0)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Project definition
-    project_dst = bundle_dir / PROJECT_DIRNAME / f"{plan.project.name}.json"
-    _copy_or_write(
-        plan.project_json_path, project_dst, plan.project.model_dump_json(indent=4)
-    )
+    if include_project:
+        project_dst = bundle_dir / PROJECT_DIRNAME / f"{plan.project.name}.json"
+        _copy_or_write(
+            plan.project_json_path, project_dst, plan.project.model_dump_json(indent=4)
+        )
 
     # 2. Dataset manifest (carries multi-arena config verbatim, if any)
     manifest_dst = bundle_dir / DATASET_DIRNAME / MANIFEST_FILENAME
@@ -310,7 +422,7 @@ def export_annotation_bundle(
 
     # 3. Pose labels
     pose_info = {"present": False}
-    if plan.pose.present and plan.pose.labels_h5 is not None:
+    if include_pose and plan.pose.present and plan.pose.labels_h5 is not None:
         _progress("Copying pose labels...", 4)
         pose_h5_dst = bundle_dir / POSE_LABELS_DIRNAME / LABELS_H5_FILENAME
         _copy_or_write(plan.pose.labels_h5, pose_h5_dst, None)
@@ -328,7 +440,7 @@ def export_annotation_bundle(
 
     # 4. Behavior labels
     behavior_info = {"present": False}
-    if plan.behavior.present and plan.behavior.labels_h5 is not None:
+    if include_behavior and plan.behavior.present and plan.behavior.labels_h5 is not None:
         _progress("Copying behavior labels...", 7)
         bc_h5_dst = bundle_dir / BEHAVIOR_LABELS_DIRNAME / LABELS_H5_FILENAME
         _copy_or_write(plan.behavior.labels_h5, bc_h5_dst, None)
@@ -380,8 +492,12 @@ def export_annotation_bundle(
             dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.copy2(src, dst)
+                if dst.stat().st_size != src.stat().st_size:
+                    raise OSError(f"the copy is {dst.stat().st_size} bytes but the original is {src.stat().st_size}")
                 copied += 1
             except (OSError, shutil.Error) as e:
+                if not allow_missing:
+                    raise BundleError(f"Could not copy '{rel}' into the package: {e}") from e
                 logger.warning("Could not copy media %s: %s", src, e)
                 missing.append(rel)
             if total and (i % 5 == 0 or i == total - 1):
@@ -414,7 +530,8 @@ def export_annotation_bundle(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "project": {
             "name": plan.project.name,
-            "file": f"{PROJECT_DIRNAME}/{plan.project.name}.json",
+            "included": bool(include_project),
+            "file": f"{PROJECT_DIRNAME}/{plan.project.name}.json" if include_project else None,
         },
         "dataset": dataset_info,
         "pose_labels": pose_info,
@@ -436,6 +553,7 @@ def export_annotation_bundle(
         "num_media_copied": copied,
         "num_missing": len(missing),
         "missing": missing,
+        "project_included": bool(include_project),
         "pose_present": pose_info["present"],
         "behavior_present": behavior_info["present"],
     }
@@ -443,42 +561,38 @@ def export_annotation_bundle(
 
 def _write_readme(bundle_dir: Path, export_info: dict) -> None:
     ds = export_info["dataset"]
-    media_dir = ds["media_dir"]
-    media_field = "Video clips folder" if ds["media_kind"] == "videos" else "Frames folder"
-    if ds["media_included"]:
-        media_line = (
-            f"  {media_dir}/            the {ds['media_kind']} "
-            "(original names preserved)"
-        )
-        media_import_line = f"  {media_field}:{' ' * max(1, 20 - len(media_field))}{media_dir}/"
-    else:
-        media_line = (
-            f"  ({ds['media_kind']} NOT included — reference only; "
-            f"originally at {ds['original_base_data_path']})"
-        )
-        media_import_line = (
-            f"  {media_field}: NOT included in this folder — point at "
-            f"{ds['original_base_data_path']} (or wherever you've put a copy)"
-        )
-
+    project = export_info["project"]
     pose_info = export_info["pose_labels"]
     behavior_info = export_info["behavior_labels"]
+    media_dir = ds["media_dir"]
+    project_included = project.get("included", bool(project.get("file")))
+
+    def yes_no(flag: bool) -> str:
+        return "yes" if flag else "no"
+
+    if ds["media_included"]:
+        media_line = f"  {media_dir}/    the {ds['media_kind']} (original names preserved)"
+    else:
+        media_line = (
+            f"  ({ds['media_kind']} NOT included - reference only; "
+            f"originally at {ds['original_base_data_path']})"
+        )
 
     lines = [
         "whisker-labeler exported dataset",
         f"Exported: {export_info['created_at']}",
         "",
         f"Dataset:  {ds['name']} ({ds['type']}, {ds['num_media']} {ds['media_kind']})",
-        f"Project:  {export_info['project']['name']}",
-        f"Multi-arena:     {'yes' if ds.get('multi_arena') else 'no'}",
-        f"Pose labels:     {'yes' if pose_info['present'] else 'no'}",
-        f"Behavior labels: {'yes' if behavior_info['present'] else 'no'}",
+        f"Project:  {project['name']}" + ("" if project_included else "  (definition not included)"),
+        f"Multi-arena:     {yes_no(ds.get('multi_arena'))}",
+        f"Pose labels:     {yes_no(pose_info['present'])}",
+        f"Behavior labels: {yes_no(behavior_info['present'])}",
         "",
-        "This folder contains (all paths below are relative to this folder):",
-        f"  {export_info['project']['file']}",
-        f"  {ds['manifest']}",
-        media_line,
+        "This folder contains (all paths are relative to this folder):",
     ]
+    if project_included:
+        lines.append(f"  {project['file']}")
+    lines += [f"  {ds['manifest']}", media_line]
     if pose_info["present"]:
         lines.append(f"  {pose_info['labels_h5']}")
     if behavior_info["present"]:
@@ -486,20 +600,14 @@ def _write_readme(bundle_dir: Path, export_info: dict) -> None:
     lines += [
         "",
         "To import into whisker-labeler:",
-        "  Data Explorer -> the '...' button -> 'Import Dataset...'",
-        "  Then fill in each field by browsing INTO this folder:",
-        f"    Project file:            {export_info['project']['file']}",
-        f"    Dataset info file:       {ds['manifest']}",
-        media_import_line,
+        "  File -> Import...  and choose this folder (or any folder or file inside it).",
+        "  The app finds the export, shows what it contains, and lets you tick just the",
+        "  parts you want: project, " + ds["media_kind"] + ", pose labels, behavior labels.",
+        "  If you import only labels, you'll be asked which existing dataset they belong to.",
     ]
-    if pose_info["present"]:
-        lines.append(f"    Pose labels file:        {pose_info['labels_h5']}")
-    if behavior_info["present"]:
-        lines.append(f"    Behavior labels file:    {behavior_info['labels_h5']}")
-    lines.append(
-        "  Each field is checked as soon as you pick it, so if something's "
-        "wrong you'll see exactly which piece and why."
-    )
+    if not ds["media_included"]:
+        lines.append(
+            f"  The {ds['media_kind']} are not in this folder, so you'll be asked where they are."
+        )
     with open(bundle_dir / README_FILENAME, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-

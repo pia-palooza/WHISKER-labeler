@@ -58,10 +58,8 @@ class Widget(VerticalCollapsiblePanel):
         self.options_menu = QMenu(self)
         self.create_project_action = self.options_menu.addAction("Create Project...")
         self.create_dataset_action = self.options_menu.addAction("Create Dataset...")
-        self.import_labels_action = self.options_menu.addAction("Import Pose Labels...")
-        self.import_dataset_action = self.options_menu.addAction(
-            "Import Dataset..."
-        )
+        self.import_dataset_action = self.options_menu.addAction("Import...")
+        self.import_labels_action = self.options_menu.addAction("Import Labels from Other Software...")
 
         self.options_button.setMenu(self.options_menu)
 

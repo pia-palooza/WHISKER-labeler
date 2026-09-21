@@ -31,6 +31,9 @@ class PoseLabelOperations(BaseWorkflowOperationsHelper):
     def scan_labels(self):
         """Scans for existing pose label files (lazy load)."""
         self._pose_labels.clear()
+        # The metadata cache mirrors files on disk; a rescan is how the app learns they changed
+        # (e.g. after an import), so it must not keep serving the old labeled-frame lists.
+        self._pose_label_metadata_cache.clear()
         if self._base_dir.exists():
             discovered_entries = []
             for name in os.listdir(self._base_dir):

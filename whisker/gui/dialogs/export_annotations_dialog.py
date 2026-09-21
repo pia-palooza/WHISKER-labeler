@@ -99,18 +99,41 @@ class ExportAnnotationsDialog(QDialog):
         contents_layout.addWidget(self.contents_tree)
         main_layout.addWidget(contents_group)
 
-        # --- Include video files (video datasets only) ---
+        # --- What to include ---
         self._is_video = bool(
             dataset and dataset.type == DatasetType.VIDEO_COLLECTION
         )
-        self.include_media_checkbox = QCheckBox(
-            "Include video files in the bundle (uncheck for a smaller, "
-            "reference-only bundle)"
+        self._availability_set = False
+        include_group = QGroupBox("Include in the export")
+        include_layout = QVBoxLayout(include_group)
+        self.include_project_checkbox = QCheckBox(
+            "Project definition (body parts, identities, behaviors)"
         )
-        self.include_media_checkbox.setChecked(True)
-        self.include_media_checkbox.setVisible(self._is_video)
-        self.include_media_checkbox.toggled.connect(self._refresh_preview)
-        main_layout.addWidget(self.include_media_checkbox)
+        self._media_kind = "videos" if self._is_video else "frames"
+        self.include_media_checkbox = QCheckBox(
+            f"The {self._media_kind} themselves (recommended: the package is then complete and self-contained)"
+        )
+        self.include_pose_checkbox = QCheckBox("Pose labels")
+        self.include_behavior_checkbox = QCheckBox("Behavior labels")
+        self._include_checkboxes = (
+            self.include_project_checkbox,
+            self.include_media_checkbox,
+            self.include_pose_checkbox,
+            self.include_behavior_checkbox,
+        )
+        for checkbox in self._include_checkboxes:
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._refresh_preview)
+            include_layout.addWidget(checkbox)
+        self.media_warning = QLabel(
+            f"Without the {self._media_kind}, whoever imports this package will be asked to find them themselves. "
+            "Fine for a small labels-only export; otherwise leave this ticked."
+        )
+        self.media_warning.setWordWrap(True)
+        self.media_warning.setStyleSheet("color: #e67e22;")
+        include_layout.addWidget(self.media_warning)
+        # The choices sit above the preview they drive.
+        main_layout.insertWidget(main_layout.indexOf(contents_group), include_group)
 
         # --- Destination ---
         dest_group = QGroupBox("Save bundle to")
@@ -132,6 +155,8 @@ class ExportAnnotationsDialog(QDialog):
 
         dest_grid.addWidget(self._right_label("Bundle name:"), 1, 0)
         self.name_edit = QLineEdit()
+        self._name_touched = False
+        self.name_edit.textEdited.connect(self._on_name_typed)
         self.name_edit.textChanged.connect(self._update_full_path)
         dest_grid.addWidget(self.name_edit, 1, 1)
 
@@ -194,13 +219,16 @@ class ExportAnnotationsDialog(QDialog):
             return
 
         plan = self._plan
-        self._add_row(f"project/{plan.project.name}.json", "project definition")
+        self.media_warning.setVisible(not self.include_media_checkbox.isChecked())
+        self._sync_availability(plan)
+        if self.include_project_checkbox.isChecked():
+            self._add_row(f"project/{plan.project.name}.json", "project definition")
         self._add_row(
             "dataset/manifest.json",
             f"{plan.num_media} {plan.media_kind} listed"
             + (", multi-arena" if plan.dataset.is_multi_arena else ""),
         )
-        if plan.pose.present:
+        if plan.pose.present and self.include_pose_checkbox.isChecked():
             self._add_row(
                 "pose_labels/labels.h5",
                 f"{plan.pose.num_labeled_frames} labeled frames"
@@ -212,10 +240,10 @@ class ExportAnnotationsDialog(QDialog):
             )
             if plan.pose.metadata_json is not None:
                 self._add_row("pose_labels/metadata.json", "pose label metadata")
-        if plan.behavior.present:
+        if plan.behavior.present and self.include_behavior_checkbox.isChecked():
             self._add_row(
                 "behavior_labels/labels.h5",
-                f"{plan.behavior.num_labeled_videos} labeled keys",
+                f"{plan.behavior.num_labeled_videos} labeled video(s)",
             )
             self._add_row("behavior_labels/metadata.json", "behavior label metadata")
         if self._include_media():
@@ -231,9 +259,36 @@ class ExportAnnotationsDialog(QDialog):
         self._add_row("export_info.json", "bundle description")
         self.contents_tree.resizeColumnToContents(0)
 
-        if not self.name_edit.text().strip():
-            self.name_edit.setText(plan.default_bundle_name())
+        if not self._name_touched:
+            self.name_edit.setText(self._suggest_name(plan))
         self._update_full_path()
+
+    def _on_name_typed(self, _text: str):
+        self._name_touched = True
+
+    def _suggest_name(self, plan) -> str:
+        labels_only = (
+            not self.include_media_checkbox.isChecked()
+            and (self.include_pose_checkbox.isChecked() or self.include_behavior_checkbox.isChecked())
+        )
+        return f"{plan.dataset.name}_labels" if labels_only else plan.default_bundle_name()
+
+    def _sync_availability(self, plan):
+        """Pose/behavior can only be included if this dataset has them. Tick what exists
+        the first time; afterwards leave the user's choices alone."""
+        for checkbox, present, title in (
+            (self.include_pose_checkbox, plan.pose.present, "Pose labels"),
+            (self.include_behavior_checkbox, plan.behavior.present, "Behavior labels"),
+        ):
+            checkbox.blockSignals(True)
+            checkbox.setEnabled(present)
+            checkbox.setText(title if present else f"{title} — none for this dataset")
+            if not present:
+                checkbox.setChecked(False)
+            elif not self._availability_set:
+                checkbox.setChecked(True)
+            checkbox.blockSignals(False)
+        self._availability_set = True
 
     def _on_browse(self):
         start = self.dest_edit.text().strip() or str(Path.home())
@@ -250,15 +305,13 @@ class ExportAnnotationsDialog(QDialog):
             self._plan is not None
             and bool(self.dest_edit.text().strip())
             and bool(self.name_edit.text().strip())
+            and any(checkbox.isChecked() for checkbox in self._include_checkboxes)
         )
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
             ok_enabled
         )
 
     def _include_media(self) -> bool:
-        """Frames are always copied; videos only when the box is checked."""
-        if not self._is_video:
-            return True
         return self.include_media_checkbox.isChecked()
 
     # -- results -------------------------------------------------------
@@ -266,6 +319,18 @@ class ExportAnnotationsDialog(QDialog):
     @property
     def include_media(self) -> bool:
         return self._include_media()
+
+    @property
+    def include_project(self) -> bool:
+        return self.include_project_checkbox.isChecked()
+
+    @property
+    def include_pose(self) -> bool:
+        return self.include_pose_checkbox.isChecked() and self.include_pose_checkbox.isEnabled()
+
+    @property
+    def include_behavior(self) -> bool:
+        return self.include_behavior_checkbox.isChecked() and self.include_behavior_checkbox.isEnabled()
 
     @property
     def selected_project_name(self) -> str:
