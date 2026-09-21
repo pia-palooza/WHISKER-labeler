@@ -1,104 +1,53 @@
-"""Background jobs for exporting and importing annotation bundles.
+"""Background jobs for importing and exporting Whisker bundles.
 
-They wrap the pure-filesystem work in :mod:`whisker.core.bundle` (export) and
-:mod:`whisker.core.bundle_import` (import) so the GUI can run it on a worker thread
-with progress reporting. All conflict (overwrite / merge) decisions are resolved by the
-caller *before* a job starts, so a job never pops dialogs and never mutates the
-in-memory workspace; the caller rescans the workspace afterwards.
+They wrap the pure-filesystem work in :mod:`whisker.core.whisker_bundle` so the GUI can run it on a worker thread
+with progress and cancellation. Every decision (what to bring in, what to replace, where media go) is made by the
+caller *before* a job starts, so a job never pops dialogs and never touches the in-memory workspace; the caller
+rescans the workspace afterwards.
 """
 
 from pathlib import Path
+from typing import Iterable, Optional
 
 from whisker.base.job import BaseJob
-from whisker.core import bundle, bundle_import, compilation
+from whisker.core import whisker_bundle as wb
 
 
 class ExportBundleJob(BaseJob):
-    def __init__(
-        self,
-        plan: "bundle.BundleExportPlan",
-        bundle_dir: Path,
-        overwrite: bool = False,
-        include_media: bool = True,
-        include_project: bool = True,
-        include_pose: bool = True,
-        include_behavior: bool = True,
-    ):
-        super().__init__()
-        self.plan = plan
-        self.bundle_dir = Path(bundle_dir)
-        self.overwrite = overwrite
-        self.include_media = include_media
-        self.include_project = include_project
-        self.include_pose = include_pose
-        self.include_behavior = include_behavior
-
-    def run(self) -> dict:
-        return bundle.export_annotation_bundle(
-            self.plan,
-            self.bundle_dir,
-            overwrite=self.overwrite,
-            include_media=self.include_media,
-            include_project=self.include_project,
-            include_pose=self.include_pose,
-            include_behavior=self.include_behavior,
-            progress_cb=self.report_progress,
-            cancel_cb=lambda: self.is_cancelled,
-        )
-
-
-class ExportCompilationJob(BaseJob):
-    def __init__(self, items, plans, dest_dir: Path, name: str, overwrite: bool = False):
-        super().__init__()
-        self.items = items
-        self.plans = plans
-        self.dest_dir = Path(dest_dir)
-        self.name = name
-        self.overwrite = overwrite
-
-    def run(self) -> dict:
-        return compilation.export_compilation(
-            self.items,
-            self.plans,
-            self.dest_dir,
-            self.name,
-            overwrite=self.overwrite,
-            progress_cb=self.report_progress,
-            cancel_cb=lambda: self.is_cancelled,
-        )
-
-
-class ImportCompilationJob(BaseJob):
-    def __init__(self, workspace, contents: "compilation.CompilationContents",
-                 selection: "compilation.CompilationSelection"):
+    def __init__(self, workspace, plan: "wb.ExportPlan", dest: Path, overwrite: bool = False):
         super().__init__()
         self.workspace = workspace
-        self.contents = contents
-        self.selection = selection
+        self.plan = plan
+        self.dest = Path(dest)
+        self.overwrite = overwrite
 
     def run(self) -> dict:
-        return compilation.import_compilation(
+        return wb.export_bundle(
             self.workspace,
-            self.contents,
-            self.selection,
+            self.plan,
+            self.dest,
+            overwrite=self.overwrite,
             progress_cb=self.report_progress,
             cancel_cb=lambda: self.is_cancelled,
         )
 
 
 class ImportBundleJob(BaseJob):
-    def __init__(self, workspace, contents: "bundle_import.BundleContents",
-                 selection: "bundle_import.ImportSelection"):
+    def __init__(self, workspace, bundle_path: Path, chosen: Iterable[str], media_root: Optional[Path] = None):
         super().__init__()
         self.workspace = workspace
-        self.contents = contents
-        self.selection = selection
+        self.bundle_path = Path(bundle_path)
+        self.chosen = set(chosen)
+        self.media_root = Path(media_root) if media_root else None
 
     def run(self) -> dict:
-        return bundle_import.import_from_bundle(
-            self.workspace,
-            self.contents,
-            self.selection,
-            progress_cb=self.report_progress,
-            cancel_cb=lambda: self.is_cancelled,
-        )
+        # Opened here, on the worker thread, so the archive is never shared between threads.
+        with wb.WhiskerBundle.open(self.bundle_path) as bundle:
+            return wb.import_bundle(
+                self.workspace,
+                bundle,
+                self.chosen,
+                self.media_root,
+                progress_cb=self.report_progress,
+                cancel_cb=lambda: self.is_cancelled,
+            )

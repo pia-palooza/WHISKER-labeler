@@ -199,94 +199,63 @@ Move between videos with the Data Explorer.
 
 ## Moving data to / from full WHISKER
 
-Because the labeler shares WHISKER's workspace layout, the simplest path is to
-point it directly at a full WHISKER workspace — no conversion needed. To hand a
-dataset to someone else (or move it between workspaces), use Export and Import:
+The labeler and full WHISKER exchange work as **Whisker bundles**: an ordinary ZIP file
+(ZIP64, so multi-gigabyte bundles are fine) holding one or more datasets with their labels,
+and optionally prediction results and project definitions. Media and label files are stored
+exactly as they exist in the workspace — uncompressed and unconverted — so nothing is
+translated on the way between the two tools. A bundle made by either one opens in the other.
 
-### Export — File → Export → Export Dataset / Labels…
+Because the labeler shares WHISKER's workspace layout, you can also point it directly at a
+full WHISKER workspace — no bundle needed.
 
-Choose the dataset (you don't need to select it first) and tick what to include: the
-**project**, the **videos/frames**, the **pose labels**, the **behavior labels**. **Everything is
-ticked by default, including the videos/frames**, so the package is complete and self-contained.
-Untick the videos/frames only for a small labels-only export that's easy to email; whoever
-imports it is then asked to find the files themselves. The result is one folder with a
-`README.txt` describing it.
+### Export — File → Export → Export Whisker Bundle…
 
-An export is only ever left behind if it is complete:
+Tick the datasets to export (their media and labels always go in), then optionally the
+projects and prediction results to include, and choose where to save the `.zip`. The
+suggested file name follows WHISKER's (`whisker_bundle_<dataset>_<date>.zip`).
 
-- **Before anything is copied**, every file is checked to exist and the destination is checked
-  to have room. A missing file stops the export, naming some of them, instead of producing a
-  package that can't be imported. (An existing package is not replaced if this fails.)
-- Each copied file is checked to be the same size as the original.
-- If anything fails or you cancel, the partly written folder is removed.
-- **Afterwards the finished package is read back the way the importer will read it**, and the
-  completion message tells you it was checked, or lists exactly what wouldn't import.
+- The bundle is written to a temporary file and only given its real name once complete, so a
+  cancelled or failed export never leaves a partial bundle (and never replaces a good one).
+- Afterwards the finished bundle is read back and every file is checked against its stored
+  checksum; the completion message says so, or lists exactly what is wrong.
+- A media file that can't be found on disk isn't in the bundle and is listed in it as
+  *missing*, as WHISKER does; you're told which ones.
+- Label edits still open in a labeling tab aren't on disk yet, so you're asked whether to
+  save them first.
 
-### Import — File → Import… (Ctrl+Shift+O)
+### Import — File → Import Whisker Bundle… (Ctrl+Shift+O)
 
-Choose the export folder — or drag it onto the window. You can pick the folder itself, a
-folder inside it, or a folder that contains it (unzipping adds a level); the app finds it and
-explains exactly what it looked at if it can't. It then lists what the export contains, and
-you tick what you want: **project**, **videos/frames**, **pose labels**, **behavior labels**.
+Choose the `.zip`. Only its listing and manifest are read to show what it holds: datasets,
+their labels, prediction results and projects, each marked **New** or **Already here**. New
+things are ticked; anything you already have is left alone unless you tick it, and replacing
+asks for confirmation first.
 
-- For the **project** and the **dataset** you choose **add as a new one** (under a name you
-  can edit) **or use one you already have** (pick it from your list). If you already have a
-  project or dataset with the same name, "use mine" is the starting choice, so a re-import
-  defaults to just bringing in the labels; switch to "add as new" to get a copy under a free
-  name (or tick *Replace*). Using an existing project installs nothing and tells you if it
-  doesn't define body parts, identities or behaviors that the labels use. Using an existing
-  dataset copies no videos/frames: the labels are added to it.
-- If the videos/frames weren't included, you'll be asked where they are.
-- **Labels without their dataset:** you're asked which of your datasets they belong to. The
-  labels are checked against that dataset's files and any mismatches are reported. If the
-  dataset already has labels you choose how to combine them: **combine, keeping yours where
-  both have a label**, **combine, using the imported ones**, **replace yours**, or **skip**. Your
-  existing labels are backed up while this runs and restored if it fails.
-- Labels that can't be combined (different body parts or identities) are never merged.
+- **Frame subsets** are stored inside the workspace. **Videos and image collections** go in a
+  folder you choose (each dataset gets its own folder inside it; media already outside the
+  workspace are never overwritten) and the workspace links to them. Each dataset's stored media
+  location is rewritten to match this machine.
+- Labels, prediction results and projects are copied over unchanged.
+- The bundle is treated as untrusted: unsafe paths are refused, and everything is extracted to a
+  staging folder with each file's checksum verified. Only when the whole archive has been read
+  cleanly are the pieces moved into place, so a corrupt, truncated or cancelled import leaves
+  the workspace exactly as it was.
+- A bundle from a newer format version is refused with an explanation; fields this version
+  doesn't know are ignored.
 
-### Several datasets in one package — File → Export → Export Several Datasets…
+Layout of a bundle:
 
-Tick any number of datasets in the table; for each, choose the project it was labeled under
-(guessed from its labels) and whether to copy its **videos/frames**, **pose labels** and
-**behavior labels**. The result is one folder, `compilation_info.json` and `README.txt` at the
-top and a complete standard export per dataset inside — the same format a single-dataset export
-produces, so each inner folder also imports on its own, and full WHISKER reads them the same way.
-If the export fails or is cancelled, the partly written folder is removed.
-
-To import one, pick the compilation folder in **File → Import…** and click **Choose datasets…**.
-A table lists every dataset with a checkbox for its videos/frames, pose labels and behavior labels:
-
-- Each dataset has a choice: **add as new** (under the name in "Add as new") or **use existing**
-  (pick one of your datasets; nothing is copied and the labels are added to it). Datasets you
-  already have start on "use existing" with the dataset of the same name selected. Each project
-  gets the same choice: add it as new under a name, or use one of yours.
-- Where labels would land on existing labels, one choice below the table decides:
-  **combine keeping yours**, **combine using the imported ones**, or **replace yours**.
-- The *Notes* column reports label mismatches as you tick (e.g. "7/9 frames match, 2 skipped"),
-  and asks you to locate any videos/frames that weren't copied into the package (double-click).
-- Each project is installed once even if several datasets share it, and one dataset failing
-  never stops the others — the summary lists what was imported and what wasn't.
-
-**Import from separate files…** (button at the bottom of the Import dialog) is for files that
-didn't come from Export, for example a folder of frames and some label files. You shouldn't have to
-dig through folders for things you already have in your workspace:
-
-- **Project:** choose *one of your existing projects* from a list (your active project is offered
-  first), or add one from a `.json` file. If the labels use body parts, identities or behaviors
-  your chosen project doesn't define, you're told, but the import isn't blocked.
-- **Dataset:** choose *one of your existing datasets* (the list is ordered by how well the label
-  files fit each one), or add a new dataset from its info file and media folder.
-- **Labels:** browse for the pose and/or behavior label files. Onto an existing dataset they get the
-  same mismatch report and combine / replace choices as any other import.
-
-With an existing project and dataset chosen, the label files are the only thing to browse for.
+```
+whisker_bundle.json                                     manifest: what's inside (read first)
+datasets/<dataset>/manifest.json                        the dataset; its `files` list is authoritative
+datasets/<dataset>/media/<relative path>                frames / videos / images
+workflows/<workflow>/labels/<dataset>/…                 pose labels.h5 + metadata.json, behavior labels.h5, …
+workflows/<workflow>/predictions/<run>/<dataset>/…      prediction results
+projects/<name>.json                                    project definitions
+```
 
 **File → Import Labels from Other Software…** brings in labels made with other tools
 (MARS, DLC, …); pick one of your existing datasets from its list (or type a new name), and your
 active project is preselected.
-
-Or copy an exported `workflows/` (and `projects/`) folder into your full WHISKER workspace;
-WHISKER discovers the labels on its next scan.
 
 ---
 
@@ -315,5 +284,4 @@ pip install -e .
 - A dataset's **filenames** are how labels are matched to media — keep them
   consistent with your full WHISKER datasets.
 - Hand the tool to a collaborator by sharing this repo; they install it the same
-  way, create or import projects, label, and send the workspace (or exported
-  labels) back.
+  way, create or import projects, label, and send a Whisker bundle (or the workspace) back.

@@ -5,6 +5,7 @@ that the real save paths (pose and behavior) put an open edit on disk so the exp
 and that the export entry points ask first.
 """
 import os
+import zipfile
 from types import SimpleNamespace
 from unittest import mock
 
@@ -15,7 +16,7 @@ from PyQt6.QtCore import QPointF, QThreadPool
 from PyQt6.QtWidgets import QApplication, QDialog, QWidget
 
 from fixtures import WorkspaceCase, frame_names
-from whisker.core import bundle as fmt
+from whisker.core import whisker_bundle as wb
 from whisker.gui import unsaved_labels as ul
 from whisker.gui.tabs.base_tab import BaseTab
 from whisker.gui.widgets.data_explorer import action_handler as ah
@@ -88,9 +89,13 @@ class SavedEditsReachTheExport(WorkspaceCase):
         self.add_dataset(self.ws, "d1", self.files)
 
     def exported(self, name="out"):
-        plan = fmt.build_export_plan(self.ws, "d1", "proj")
+        """Export d1 as a Whisker bundle and unpack it, so its files can be read like the ones on disk."""
+        plan = wb.build_export_plan(self.ws, ["d1"], ["proj"])
+        zip_path = self.tmp / f"{name}.zip"
+        wb.export_bundle(self.ws, plan, zip_path)
         out = self.tmp / name
-        fmt.export_annotation_bundle(plan, out)
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(out)
         return out
 
     def test_an_open_pose_edit_is_missing_from_an_export_until_it_is_saved(self):
@@ -102,7 +107,7 @@ class SavedEditsReachTheExport(WorkspaceCase):
         self.assertTrue(model.is_dirty())
 
         def exported_nose():
-            df = PoseDataset.from_file(self.exported(f"out_{model.is_dirty()}") / "pose_labels" / "labels.h5").keypoint_data
+            df = PoseDataset.from_file(self.exported(f"out_{model.is_dirty()}") / "workflows/pose_estimation/labels/d1/labels.h5").keypoint_data
             return float(df.loc[(key, "mouse1", "nose"), "x"])
 
         self.assertNotEqual(exported_nose(), 123.0)          # the gap this step closes
@@ -124,7 +129,7 @@ class SavedEditsReachTheExport(WorkspaceCase):
         ).astype(labels.bouts.dtypes.to_dict())], ignore_index=True)
 
         def exported_keys(name):
-            return set(BehaviorDataset.from_file(self.exported(name) / "behavior_labels" / "labels.h5").bouts["video_key"])
+            return set(BehaviorDataset.from_file(self.exported(name) / "workflows/behavior_classification/labels/d1/labels.h5").bouts["video_key"])
 
         self.assertEqual(exported_keys("before"), {"a", "b"})          # the gap this step closes
 
@@ -188,36 +193,23 @@ class ExportEntryPointsAsk(WorkspaceCase):
         self.handler = ah.ActionHandler(self.parent, QThreadPool())
         self.handler.update_workspace(ws)
         # Reaching the dialog is as far as these tests go; declining it ends the export.
-        patcher = mock.patch.multiple(ah, ExportAnnotationsDialog=mock.DEFAULT, ExportCompilationDialog=mock.DEFAULT)
-        self.dialogs = patcher.start()
+        patcher = mock.patch.object(ah, "ExportWhiskerBundleDialog")
+        self.dialog = patcher.start()
         self.addCleanup(patcher.stop)
-        for dialog in self.dialogs.values():
-            dialog.return_value.exec.return_value = QDialog.DialogCode.Rejected
+        self.dialog.return_value.exec.return_value = QDialog.DialogCode.Rejected
 
-    def test_single_export_opens_its_dialog_when_the_hook_agrees(self):
+    def test_export_opens_its_dialog_when_the_hook_agrees(self):
         hook = mock.Mock(return_value=True)
         self.handler.set_before_export_hook(hook)
-        self.handler._export_annotations("d1")
+        self.handler.show_export_dialog(preselect="d1")
         hook.assert_called_once_with()
-        self.dialogs["ExportAnnotationsDialog"].assert_called_once()
+        self.dialog.assert_called_once()
 
-    def test_single_export_is_cancelled_when_the_hook_says_no(self):
+    def test_export_is_cancelled_when_the_hook_says_no(self):
         self.handler.set_before_export_hook(lambda: False)
-        self.handler._export_annotations("d1")
-        self.dialogs["ExportAnnotationsDialog"].assert_not_called()
+        self.handler.show_export_dialog(preselect="d1")
+        self.dialog.assert_not_called()
 
-    def test_compilation_export_is_cancelled_when_the_hook_says_no(self):
-        self.handler.set_before_export_hook(lambda: False)
-        self.handler.show_export_compilation_dialog()
-        self.dialogs["ExportCompilationDialog"].assert_not_called()
-
-    def test_compilation_export_opens_its_dialog_when_the_hook_agrees(self):
-        hook = mock.Mock(return_value=True)
-        self.handler.set_before_export_hook(hook)
-        self.handler.show_export_compilation_dialog()
-        hook.assert_called_once_with()
-        self.dialogs["ExportCompilationDialog"].assert_called_once()
-
-    def test_without_a_hook_exports_open_as_before(self):
-        self.handler._export_annotations("d1")
-        self.dialogs["ExportAnnotationsDialog"].assert_called_once()
+    def test_without_a_hook_export_opens_as_before(self):
+        self.handler.show_export_dialog()
+        self.dialog.assert_called_once()
