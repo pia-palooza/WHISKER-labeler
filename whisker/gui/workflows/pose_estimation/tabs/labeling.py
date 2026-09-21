@@ -75,6 +75,12 @@ class LabelingPosesTab(BaseTab):
         """When data changes, the tab becomes dirty."""
         self.set_dirty(True)
 
+    def has_unsaved_labels(self) -> bool:
+        return self.is_dirty()
+
+    def save_labels(self) -> bool:
+        return self.labeling_widget.save()
+
     def set_workspace(self, workspace: Optional[Workspace]):
         """Passes the workspace context down to child widgets."""
         super().set_workspace(workspace)
