@@ -28,6 +28,7 @@ from PyQt6.QtGui import QIcon, QGuiApplication
 
 from whisker.core.workspace import Workspace
 from whisker.base.logger import configure_console_logger
+from whisker.gui import unsaved_labels
 from whisker.gui.constants import ASSETS_DIR
 from whisker.gui.widgets import data_explorer
 from whisker.gui.dialogs.warn_if_exists_dialog import WarnIfExistsDialog
@@ -506,6 +507,7 @@ class MainWindow(QMainWindow):
         # --- Project and Data Explorer ---
         self.active_project_changed.connect(self._on_project_changed)
         self.active_project_changed.connect(self.data_explorer.set_active_project)
+        self.data_explorer.set_before_export_hook(self._settle_unsaved_labels_before_export)
         self.active_project_changed.connect(self._update_menu_actions_state)
         self.project_selector.currentIndexChanged.connect(self._on_project_selected)
         self.data_explorer.toggled.connect(self.study_panel.setVisible)
@@ -1107,6 +1109,30 @@ class MainWindow(QMainWindow):
         )
 
         return reply == QMessageBox.StandardButton.Yes
+
+    def _settle_unsaved_labels_before_export(self) -> bool:
+        """An export copies the label files as saved on disk, so label edits still open in a
+        labeling tab would be left out. Ask what to do about them; False cancels the export."""
+
+        def ask(names: list) -> str:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Unsaved Labels")
+            box.setText("You have unsaved label edits.")
+            box.setInformativeText(
+                f"An export contains only what has been saved to disk, so edits in {', '.join(names)} "
+                "would be left out of it. Save them first?"
+            )
+            save = box.addButton("Save and Export", QMessageBox.ButtonRole.AcceptRole)
+            skip = box.addButton("Export Saved Version", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(save)
+            box.setEscapeButton(cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            return unsaved_labels.SAVE if clicked is save else unsaved_labels.SKIP if clicked is skip else unsaved_labels.CANCEL
+
+        return unsaved_labels.settle_unsaved_labels(self.views, ask)
 
     def _on_any_view_dirty_state_changed(self, dirty: bool):
         self._update_window_title()

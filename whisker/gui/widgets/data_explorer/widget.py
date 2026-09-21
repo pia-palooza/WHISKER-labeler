@@ -230,6 +230,9 @@ class Widget(VerticalCollapsiblePanel):
     def set_active_project(self, project: Optional[Project]):
         self.action_handler.set_active_project(project)
 
+    def set_before_export_hook(self, hook):
+        self.action_handler.set_before_export_hook(hook)
+
     def set_item_group(self, group: ItemGroupEnum):
         self.dropdown.setCurrentText(group.value)
         self._update_data_tree()

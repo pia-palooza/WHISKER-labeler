@@ -3,7 +3,7 @@ import os
 import shutil
 import json
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QUrl, QThreadPool, QObject
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
@@ -69,6 +69,7 @@ class ActionHandler(QObject):
         self._workspace: Optional[Workspace] = None
         self._current_model_run: Optional[str] = None
         self._active_project: Optional[Project] = None
+        self._before_export: Optional[Callable[[], bool]] = None
 
         MessageBus.get().subscribe("selection/model_run/changed", lambda t, p: self._on_model_run_changed(p.get("name")))
 
@@ -77,6 +78,13 @@ class ActionHandler(QObject):
 
     def set_active_project(self, project: Optional[Project]):
         self._active_project = project
+
+    def set_before_export_hook(self, hook: Optional[Callable[[], bool]]):
+        """``hook()`` runs before an export dialog opens and returns False to cancel the export."""
+        self._before_export = hook
+
+    def _ok_to_export(self) -> bool:
+        return self._before_export is None or bool(self._before_export())
 
     def _on_model_run_changed(self, run_name: str):
         self._current_model_run = run_name if run_name else None
@@ -335,6 +343,8 @@ class ActionHandler(QObject):
         HDF5s and the frame images) into a tidy, self-describing bundle."""
         if not self._workspace:
             return
+        if not self._ok_to_export():        # unsaved label edits are settled first: the export copies what is on disk
+            return
 
         default_project = self._active_project.name if self._active_project else None
         dialog = ExportAnnotationsDialog(
@@ -496,6 +506,8 @@ class ActionHandler(QObject):
             return
         if not self._workspace.datasets.keys():
             QMessageBox.information(self.parent_widget, "Export", "This workspace has no datasets to export yet.")
+            return
+        if not self._ok_to_export():
             return
         default_project = self._active_project.name if self._active_project else None
         dialog = ExportCompilationDialog(self._workspace, default_project, preselect, self.parent_widget)

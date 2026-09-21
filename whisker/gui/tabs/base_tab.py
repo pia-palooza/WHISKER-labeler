@@ -59,6 +59,14 @@ class BaseTab(QWidget):
             self._is_dirty = dirty
             self.dirty_state_changed.emit(self._is_dirty)
 
+    def has_unsaved_labels(self) -> bool:
+        """True if the tab holds label edits that aren't on disk yet, which an export would miss."""
+        return False
+
+    def save_labels(self) -> bool:
+        """Write the tab's pending label edits to disk. False if that failed (the user was told why)."""
+        return True
+
     def set_active_workflow(self, workflow: Workflow):
         """
         Sets the active workflow for this tab. Subclasses should override this

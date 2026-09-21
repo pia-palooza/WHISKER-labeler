@@ -640,19 +640,25 @@ class BehaviorsLabelingWidget(QWidget):
 
     def _on_save(self):
         """Saves the entire behavior labels file for the current dataset."""
+        if self.save():
+            QMessageBox.information(self, "Success", "Behavior annotations saved!")
+
+    def save(self) -> bool:
+        """Write the behavior labels to disk. False if that failed (the user is told why)."""
         if not all([self._workspace, self._dataset_name, self._video_path]):
             QMessageBox.critical(self, "Error", "No workspace or dataset context.")
-            return
+            return False
 
         try:
             self._workspace.save_behavior_labels(self._dataset_name)
-            QMessageBox.information(self, "Success", "Behavior annotations saved!")
             self.labels_saved.emit(self._dataset_name, str(self._video_path))
+            return True
         except Exception as e:
             logging.error(f"Failed to save behavior labels: {e}", exc_info=True)
             QMessageBox.critical(
                 self, "Save Failed", f"Could not save annotations:\n{e}"
             )
+            return False
 
     def _update_plot(self):
         """Updates the Probability Plot with Ground Truth and optionally Predictions."""

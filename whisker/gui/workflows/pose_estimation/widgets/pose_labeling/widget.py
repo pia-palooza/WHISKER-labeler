@@ -218,15 +218,21 @@ class PoseLabelingWidget(QWidget):
             except ValueError: pass
 
     def _on_save_clicked(self):
+        self.save()
+
+    def save(self) -> bool:
+        """Write pending edits to disk. False if that failed (the user is told why)."""
         if not all([self._pose_label_operations, self._selected_dataset, self._project]):
             QMessageBox.warning(self, "Error", "Cannot save. Incomplete context.")
-            return
+            return False
         try:
             self.model.save(self._pose_label_operations)
             self.labels_saved.emit(self._selected_dataset.name, str(self._image_path))
+            return True
         except Exception as e:
             logging.error(f"Failed to save: {e}", exc_info=True)
             QMessageBox.critical(self, "Save Failed", f"Could not save annotations:\n{e}")
+            return False
 
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
