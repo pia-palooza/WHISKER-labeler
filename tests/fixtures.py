@@ -13,7 +13,6 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
-from whisker.core import bundle
 from whisker.core.study.dataset import Dataset, DatasetType
 from whisker.core.workspace import Workspace
 from whisker.services.behavior_classification.public.data_structures import BehaviorDataset
@@ -135,11 +134,3 @@ class WorkspaceCase(unittest.TestCase):
         beh.to_file(ws.behavior_labels.base_dir / dataset / "labels.h5")
         ws.scan_labels()
         return beh
-
-    # -- bundles ---------------------------------------------------------
-    def export_bundle(self, ws: Workspace, dataset: str, project: str = "proj", name: Optional[str] = None,
-                      dest: Optional[Path] = None, **kw) -> Path:
-        plan = bundle.build_export_plan(ws, dataset, project)
-        out = Path(dest or self.tmp / "exports") / (name or f"{dataset}_bundle")
-        bundle.export_annotation_bundle(plan, out, **kw)
-        return out
