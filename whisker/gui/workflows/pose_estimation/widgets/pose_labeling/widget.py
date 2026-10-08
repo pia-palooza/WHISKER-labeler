@@ -262,8 +262,8 @@ class PoseLabelingWidget(QWidget):
             Qt.Key.Key_S: lambda: self.controls.cycle_selection('next'),
             Qt.Key.Key_A: lambda: self.controls.cycle_selection('prev_id'),
             Qt.Key.Key_D: lambda: self.controls.cycle_selection('next_id'),
-            Qt.Key.Key_M: lambda: self.request_select_prev_image.emit,
-            Qt.Key.Key_N: lambda: self.request_select_next_image.emit,
+            Qt.Key.Key_N: self.request_select_prev_image.emit,
+            Qt.Key.Key_M: self.request_select_next_image.emit,
         }
 
         if action := actions.get(key):
