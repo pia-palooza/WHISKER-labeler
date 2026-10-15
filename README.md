@@ -167,13 +167,15 @@ place it; drag to adjust.
 | `Q` | Toggle drag / move mode |
 | `W` / `S` | Previous / next body part |
 | `A` / `D` | Previous / next identity |
+| `N` / `M` | Previous / next image (same as the **Prev Image** / **Next Image** buttons) |
 | `Delete` / `X` | Clear the selected keypoint |
 | `Ctrl+Delete` | Clear all keypoints on this image |
 | `Ctrl+I` | Swap identities |
 | `Ctrl+N` | Toggle body-part name labels |
+| `Ctrl+C` | Toggle auto-cycle |
 | `Ctrl+S` | Save |
 
-Move between images with **← / →** or the Data Explorer.
+You can also move between images with **← / →** or the Data Explorer.
 
 ### Behavior Classification (bouts on videos)
 
