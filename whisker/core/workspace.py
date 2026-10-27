@@ -13,6 +13,7 @@ from .workflows.workflow_enum import Workflow
 from ..services import make_service_clients, inject_workspace_attributes
 from ..services.pose_estimation.public.client import PoseEstimationServiceClient
 from ..services.behavior_classification.public.client import BehaviorClassificationServiceClient
+from ..services.roi_tracking.public.client import RoiTrackingServiceClient
 
 from .study.dataset_operations import DatasetOperations
 from .study.project_operations import ProjectOperations

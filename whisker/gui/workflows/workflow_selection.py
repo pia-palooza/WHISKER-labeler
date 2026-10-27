@@ -33,6 +33,7 @@ class WorkflowSelectionWidget(QButtonGroup):
         for workflow, style_sheet in [
             (Workflow.POSE_ESTIMATION, "Lilac Mist"),
             (Workflow.BEHAVIOR_CLASSIFICATION, "Sage Forest"),
+            (Workflow.ROI_TRACKING, "Slate Blue"),
         ]:
             self._add_workflow(workflow, style_sheet)
     

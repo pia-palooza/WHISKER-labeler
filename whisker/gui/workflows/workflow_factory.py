@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
 )
 from whisker.gui.tabs.base_workflow_tab import WorkflowItemHandler
+from .base_info_item_handler import BaseInfoItemHandlerWidget
 from .pose_estimation.widgets.info_item_handler import PoseEstimationInfoItemHandlerWidget
 from .behavior_classification.widgets.info_item_handler import BehaviorClassificationInfoItemHandlerWidget
 
@@ -29,5 +30,8 @@ def get_workflow_info_item_handlers() -> dict[str, WorkflowItemHandler]:
         ) for workflow_name, widget in [
             ("pose_estimation", PoseEstimationInfoItemHandlerWidget()),
             ("behavior_classification", BehaviorClassificationInfoItemHandlerWidget()),
+            # ROI tracking has no Models group and no custom item types yet, so the base handler
+            # (WORKSPACE_FILES only, otherwise "nothing to show") is enough.
+            ("roi_tracking", BaseInfoItemHandlerWidget()),
         ]
     }

@@ -14,6 +14,7 @@ from whisker.core.workspace import DatasetType, Workspace, Project
 from whisker.gui.widgets import data_explorer
 from whisker.gui.workflows.pose_estimation.tabs import LabelingPosesTab
 from whisker.gui.workflows.behavior_classification.tabs import LabelingBehaviorsTab
+from whisker.gui.workflows.roi_tracking.tabs.labeling import RoiTrackingLabelingTab
 from .base_tab import BaseTab, Workflow
 
 
@@ -39,6 +40,8 @@ class LabelingTab(BaseTab):
         self.behaviors_view = LabelingBehaviorsTab(self)
         self.tab_widget.addTab(self.behaviors_view, "Behaviors")
 
+        self.roi_view = RoiTrackingLabelingTab(self)
+        self.tab_widget.addTab(self.roi_view, "ROI Tracking")
 
         self._connect_signals()
 
@@ -46,6 +49,7 @@ class LabelingTab(BaseTab):
         """Connect signals from subtabs to this parent tab."""
         self.poses_view.dirty_state_changed.connect(self.set_dirty)
         self.behaviors_view.dirty_state_changed.connect(self.set_dirty)
+        self.roi_view.dirty_state_changed.connect(self.set_dirty)
 
         self.poses_view.labels_saved.connect(self.labels_saved)
         self.poses_view.media_selected.connect(self.request_data_explorer_selection)
@@ -54,11 +58,13 @@ class LabelingTab(BaseTab):
         self.poses_view.request_launch_worker.connect(self.request_launch_worker)
         self.behaviors_view.labels_saved.connect(self.labels_saved)
         self.behaviors_view.media_selected.connect(self.request_data_explorer_selection)
+        self.roi_view.media_selected.connect(self.request_data_explorer_selection)
 
     def set_workspace(self, workspace: Optional[Workspace]):
         super().set_workspace(workspace)
         self.poses_view.set_workspace(workspace)
         self.behaviors_view.set_workspace(workspace)
+        self.roi_view.set_workspace(workspace)
         self.set_dirty(False)
 
     def set_project(self, project: Optional[Project]):
@@ -66,6 +72,7 @@ class LabelingTab(BaseTab):
         super().set_project(project)
         self.poses_view.set_project(project)
         self.behaviors_view.set_project(project)
+        self.roi_view.set_project(project)
         self.set_dirty(False)
 
     def on_data_explorer_item_selected(self, selection: data_explorer.Selection):
@@ -95,7 +102,9 @@ class LabelingTab(BaseTab):
             self.tab_widget.setCurrentWidget(self.poses_view)
         elif workflow == Workflow.BEHAVIOR_CLASSIFICATION:
             self.tab_widget.setCurrentWidget(self.behaviors_view)
-        
+        elif workflow == Workflow.ROI_TRACKING:
+            self.tab_widget.setCurrentWidget(self.roi_view)
+
         # 2. Refresh Context (ensure the new tab sees the current selection)
         if self._current_selection:
             curr_widget = cast(BaseTab, self.tab_widget.currentWidget())

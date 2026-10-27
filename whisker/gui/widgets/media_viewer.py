@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QFormLayout, QDoubleSpinBox, QStyleOptionSlider, QGraphicsView,
     QGraphicsScene, QGraphicsPixmapItem, QGraphicsProxyWidget, QStackedWidget,
     QGraphicsItemGroup, QGraphicsLineItem, QGraphicsEllipseItem,
-    QGraphicsSimpleTextItem, QGraphicsRectItem, QCheckBox
+    QGraphicsSimpleTextItem, QGraphicsRectItem, QGraphicsPathItem, QCheckBox
 )
 
 from whisker.gui.constants import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS
@@ -95,6 +95,7 @@ class OverlayPainter:
 
         self._pose_group = self._create_group(2)
         self._detection_group = self._create_group(3)
+        self._track_group = self._create_group(2.6)
 
     def _create_group(self, z_val):
         g = QGraphicsItemGroup()
@@ -127,13 +128,15 @@ class OverlayPainter:
         self._detection_boxes = []
         self._clear_group(self._pose_group)
         self._clear_group(self._detection_group)
+        self._clear_group(self._track_group)
 
     def _clear_group(self, group: QGraphicsItemGroup):
         # Nuke it from orbit to prevent ghosting
         self.scene.removeItem(group)
         new_group = self._create_group(group.zValue())
         if group == self._pose_group: self._pose_group = new_group
-        else: self._detection_group = new_group
+        elif group == self._detection_group: self._detection_group = new_group
+        else: self._track_group = new_group
 
     def _redraw_poses(self):
         self._clear_group(self._pose_group)
@@ -203,6 +206,52 @@ class OverlayPainter:
                 txt.setBrush(QBrush(color))
                 txt.setPos(box['x'], box['y'] - 15)
                 self._detection_group.addToGroup(txt)
+
+    def update_track_overlay(self, tracks: List[Dict]):
+        """Draws, for every track, a thin semi-transparent path and a dot on the current position.
+
+        Each track is ``{"segments": [[(x, y), ...], ...], "dot": (x, y) or None, "dot_color": str, "label": str,
+        "path_color": str, "path_alpha": float, "path_width": float, "dot_radius": float}`` in video pixels; the path
+        is one line per segment (a gap in the detections starts a new one). Pass an empty list to clear."""
+        self._clear_group(self._track_group)
+        for track in tracks or []:
+            segments = [seg for seg in (track.get("segments") or []) if len(seg) >= 2]
+            if segments:
+                color = QColor(track.get("path_color", "#B497E0"))
+                color.setAlphaF(float(track.get("path_alpha", 0.6)))
+                pen = QPen(color, float(track.get("path_width", 1.5)))
+                pen.setCosmetic(True)                       # the same thin line however far the view is zoomed
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                path = QPainterPath()
+                for seg in segments:
+                    path.moveTo(seg[0][0], seg[0][1])
+                    for x, y in seg[1:]:
+                        path.lineTo(x, y)
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                self._track_group.addToGroup(item)
+            dot = track.get("dot")
+            if dot is not None:
+                r = float(track.get("dot_radius", 5.0))
+                ell = QGraphicsEllipseItem(dot[0] - r, dot[1] - r, 2 * r, 2 * r)
+                dot_color = QColor(track.get("dot_color", "#E74C3C"))
+                outline = QPen(QColor("white"), 1.5)
+                outline.setCosmetic(True)
+                ell.setPen(outline)
+                ell.setBrush(QBrush(dot_color))
+                self._track_group.addToGroup(ell)
+                if label := track.get("label"):
+                    txt = QGraphicsSimpleTextItem(str(label))
+                    txt.setBrush(QBrush(dot_color))
+                    font = txt.font()
+                    font.setPixelSize(max(10, int(2.6 * r)))
+                    font.setBold(True)
+                    txt.setFont(font)
+                    txt.setPos(dot[0] + r + 2, dot[1] - 2.6 * r)
+                    self._track_group.addToGroup(txt)
+
 
 class MediaControls(QWidget):
     """
@@ -357,6 +406,13 @@ class VideoGraphicsView(QGraphicsView):
     cursor), drag to pan once zoomed in, double-click to reset."""
 
     doubleClicked = pyqtSignal()
+    # Left click in scene (video pixel) coordinates; lets callers hit-test overlays (e.g. ROI tracking's
+    # per-arena edit gesture). Drag with the left button (moved while it is down, then released) and right
+    # click are reported the same way.
+    scene_clicked = pyqtSignal(float, float)
+    scene_dragged = pyqtSignal(float, float)
+    scene_released = pyqtSignal(float, float)
+    scene_right_clicked = pyqtSignal(float, float)
 
     ZOOM_STEP = 1.15
     MIN_ZOOM = 1.0
@@ -403,6 +459,29 @@ class VideoGraphicsView(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
+
+    def _scene_pos(self, event) -> QPointF:
+        return self.mapToScene(event.position().toPoint())
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        pos = self._scene_pos(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.scene_clicked.emit(pos.x(), pos.y())
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.scene_right_clicked.emit(pos.x(), pos.y())
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            pos = self._scene_pos(event)
+            self.scene_dragged.emit(pos.x(), pos.y())
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = self._scene_pos(event)
+            self.scene_released.emit(pos.x(), pos.y())
 
     def set_overlay_names(self, left: str, right: str):
         self._left_name = left
@@ -469,6 +548,12 @@ class MediaViewerWidget(QWidget):
     The Boss. Orchestrates the Player, the Painter, and the Controls.
     """
     frame_changed = pyqtSignal(int)
+    # Passthroughs of VideoGraphicsView's scene_* signals, in video pixel coordinates (e.g. for ROI tracking's
+    # per-arena edit gesture: press to place/move, drag to fine-tune, right-click to remove).
+    scene_clicked = pyqtSignal(float, float)
+    scene_dragged = pyqtSignal(float, float)
+    scene_released = pyqtSignal(float, float)
+    scene_right_clicked = pyqtSignal(float, float)
     DEFAULT_OVERLAY_FONT_SIZE = InfoOverlay.DEFAULT_FONT_SIZE
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -596,6 +681,10 @@ class MediaViewerWidget(QWidget):
         self.controls.goto_frame_requested.connect(self.seek_to_frame)
         self.controls.speed_changed.connect(self._media_player.setPlaybackRate)
         self.view.doubleClicked.connect(self._fit_view)
+        self.view.scene_clicked.connect(self.scene_clicked)
+        self.view.scene_dragged.connect(self.scene_dragged)
+        self.view.scene_released.connect(self.scene_released)
+        self.view.scene_right_clicked.connect(self.scene_right_clicked)
 
     # --- API ---
 
@@ -1043,11 +1132,13 @@ class MediaViewerWidget(QWidget):
         return self._ms_to_frame(self._media_player.position()) if self._is_video_loaded else -1
     
     # Delegated Passthroughs for external use
+    def pause(self): self._media_player.pause()
     def set_overlay_visible(self, v): self.info_overlay.setVisible(v)
     def set_overlay_text(self, t): self.info_overlay.set_text(t)
     def set_overlay_font_size(self, s): self.info_overlay.set_font_size(s)
     def set_pose_data(self, p, g): self.painter.update_pose_data(p, g)
     def set_detection_data(self, b): self.painter.update_detection_data(b)
+    def set_track_overlay(self, tracks): self.painter.update_track_overlay(tracks)
     def set_show_gt_poses(self, s): self.painter.set_pose_visibility(s, self.painter._show_keypoint_names)
     def set_show_keypoint_names(self, s): self.painter.set_pose_visibility(self.painter._show_gt_poses, s)
     @property
