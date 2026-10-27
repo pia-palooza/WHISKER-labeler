@@ -1,28 +1,39 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 import shutil
 
 from .dataset import Dataset, DatasetType, GLOB_EXTENSIONS_PER_DATASET_TYPE, MultiArenaConfig
 from ..base_operation_helper import BaseOperationHelper
 
 
-def _link_or_copy(src: Path, dst: Path) -> None:
+def _link_or_copy(src: Path, dst: Path) -> str:
     """Link src into dst, preferring a symlink but falling back to a hard
     link or a full copy when the OS denies symlink privileges (e.g. Windows
-    without Developer Mode or admin rights)."""
+    without Developer Mode or admin rights). Returns which method was used
+    ("symlink" / "hardlink" / "copy")."""
     try:
         os.symlink(src, dst)
-        return
-    except OSError:
+        return "symlink"
+    except (OSError, NotImplementedError, AttributeError):
         pass
     try:
         os.link(src, dst)
-        return
-    except OSError:
+        return "hardlink"
+    except (OSError, NotImplementedError, AttributeError):
         pass
     shutil.copy2(src, dst)
+    return "copy"
+
+
+def _mirror_file(src: Path, dst: Path) -> str:
+    """Like :func:`_link_or_copy`, but for a dataset's ``data/`` mirror directory: creates ``dst``'s parent
+    directory first, and is a no-op (returns "exists") when ``dst`` is already there."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        return "exists"
+    return _link_or_copy(src, dst)
 
 class DatasetOperations(BaseOperationHelper):
     def __init__(self, base_dir: Path):
@@ -117,20 +128,12 @@ class DatasetOperations(BaseOperationHelper):
         data_link_dir = dataset_dir / "data"
         os.makedirs(data_link_dir, exist_ok=True)
 
-        # 2a. Add new symlinks
+        # 2a. Add new data links (symlink, falling back to hardlink/copy)
         for rel_path in added_files:
-            src_path = base_path / rel_path
-            dst_link = data_link_dir / rel_path
-            
-            # Ensure parent dir exists for the link (hierarchical datasets)
-            if not dst_link.parent.exists():
-                os.makedirs(dst_link.parent, exist_ok=True)
-
-            if not dst_link.exists():
-                try:
-                    _link_or_copy(src_path, dst_link)
-                except OSError as e:
-                    logging.warning(f"Failed to link {src_path}: {e}")
+            try:
+                _mirror_file(base_path / rel_path, data_link_dir / rel_path)
+            except OSError as e:
+                logging.warning(f"Failed to mirror {base_path / rel_path}: {e}")
 
         # 2b. Remove old symlinks
         for rel_path in removed_files:
@@ -163,23 +166,33 @@ class DatasetOperations(BaseOperationHelper):
     ):
         logging.info(f"Creating dataset: {dataset_name}")
         dataset_dir = self._base_dir / dataset_name
-        
+
         if not BaseOperationHelper._delete_if_existing(dataset_dir, "dataset", warn_if_exists):
             return None
 
-        extensions = GLOB_EXTENSIONS_PER_DATASET_TYPE[dataset_type]
-        # Fixed list comprehension for correct extension checking
-        files = [
-            file for file in os.listdir(dataset_data_dir) if any(file.endswith(ext) for ext in extensions)
-        ]
+        dataset_data_dir = Path(dataset_data_dir)
+        extensions = tuple(
+            ext.lower() for ext in GLOB_EXTENSIONS_PER_DATASET_TYPE[dataset_type]
+        )
+
+        # Recursive scan so nested folders of frames/videos are picked up — this
+        # matches what the "Create Dataset" dialog previews (it globs
+        # recursively). A top-level-only os.listdir here silently produced a
+        # dataset with fewer files than the preview showed.
+        files: List[str] = []
+        for root, _, names in os.walk(dataset_data_dir):
+            for name in names:
+                if not name.lower().endswith(extensions):
+                    continue
+                rel = (Path(root) / name).relative_to(dataset_data_dir)
+                files.append(str(rel).replace("\\", "/"))
         files.sort()
 
-        dataset_symbolic_link_dir = dataset_dir / "data"
-        os.makedirs(dataset_symbolic_link_dir, exist_ok=True)
-        for file in files:
-            file_path = dataset_data_dir / file
-            link_path = dataset_symbolic_link_dir / file
-            _link_or_copy(file_path, link_path)
+        dataset_data_link_dir = dataset_dir / "data"
+        os.makedirs(dataset_data_link_dir, exist_ok=True)
+        methods: set[str] = set()
+        for rel in files:
+            methods.add(_mirror_file(dataset_data_dir / rel, dataset_data_link_dir / rel))
 
         new_dataset = Dataset(
             name=dataset_name,
@@ -187,10 +200,12 @@ class DatasetOperations(BaseOperationHelper):
             type=dataset_type,
             files=files,
         )
-        self._datasets[dataset_name] = new_dataset 
+        self._datasets[dataset_name] = new_dataset
         self.add_dataset(dataset_name, new_dataset, overwrite_existing=False)
 
-        logging.info(f"Created new dataset {dataset_name} with {len(files)} files")
+        methods.discard("exists")
+        how = f" (via {', '.join(sorted(methods))})" if methods else ""
+        logging.info(f"Created new dataset {dataset_name} with {len(files)} files{how}")
 
     def create_multi_arena_dataset(
         self,
@@ -219,15 +234,10 @@ class DatasetOperations(BaseOperationHelper):
         data_link_dir = dataset_dir / "data"
         os.makedirs(data_link_dir, exist_ok=True)
         for rel in files:
-            src_path = Path(dataset_data_dir) / rel
-            dst_link = data_link_dir / rel
-            if not dst_link.parent.exists():
-                os.makedirs(dst_link.parent, exist_ok=True)
-            if not dst_link.exists():
-                try:
-                    _link_or_copy(src_path, dst_link)
-                except OSError as e:
-                    logging.warning(f"Failed to link {src_path}: {e}")
+            try:
+                _mirror_file(Path(dataset_data_dir) / rel, data_link_dir / rel)
+            except OSError as e:
+                logging.warning(f"Failed to mirror {Path(dataset_data_dir) / rel}: {e}")
 
         new_dataset = Dataset(
             name=dataset_name,
@@ -280,15 +290,10 @@ class DatasetOperations(BaseOperationHelper):
         data_link_dir = self._base_dir / dataset_name / "data"
         os.makedirs(data_link_dir, exist_ok=True)
         for rel in files:
-            src_path = Path(existing.base_data_path) / rel
-            dst_link = data_link_dir / rel
-            if not dst_link.parent.exists():
-                os.makedirs(dst_link.parent, exist_ok=True)
-            if not dst_link.exists():
-                try:
-                    _link_or_copy(src_path, dst_link)
-                except OSError as e:
-                    logging.warning(f"Failed to link {src_path}: {e}")
+            try:
+                _mirror_file(Path(existing.base_data_path) / rel, data_link_dir / rel)
+            except OSError as e:
+                logging.warning(f"Failed to mirror {Path(existing.base_data_path) / rel}: {e}")
 
         updated = existing.model_copy(update={
             "files": files,

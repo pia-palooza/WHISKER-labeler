@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
         
         self._create_detector_action = QAction("Create Detector Dataset...", self)
         file_menu.addAction(self._create_detector_action)
-        
+
         file_menu.addSeparator()
         
         self._refresh_ws_action = QAction("Refresh Workspace", self)
@@ -248,25 +248,43 @@ class MainWindow(QMainWindow):
         
         # Export Submenu
         export_menu = QMenu("Export", self)
+        export_menu.setToolTipsVisible(True)
         file_menu.addMenu(export_menu)
-        
+
         self._export_labels_action = QAction("Export Whisker Bundle...", self)
         self._export_labels_action.setToolTip("Save datasets, with their media and labels, as a Whisker bundle (.zip)")
         self._export_labels_action.triggered.connect(self._export_annotations)
         export_menu.addAction(self._export_labels_action)
 
         self._export_charts_action = QAction("Export Charts (.png)...", self)
+        self._export_charts_action.setToolTip(
+            "Needs a selected dataset and an active model run."
+        )
         self._export_charts_action.triggered.connect(self._export_behavior_charts)
         export_menu.addAction(self._export_charts_action)
-        
+
         self._export_jitter_action = QAction("Export Jitter Analysis (.png)...", self)
+        self._export_jitter_action.setToolTip(
+            "Needs a selected dataset and an active model run."
+        )
         self._export_jitter_action.triggered.connect(self._export_jitter_analysis)
         export_menu.addAction(self._export_jitter_action)
-        
+
         self._export_bouts_action = QAction("Export Bouts (.json)...", self)
+        self._export_bouts_action.setToolTip(
+            "Needs a selected dataset and an active model run."
+        )
         self._export_bouts_action.triggered.connect(self._export_bouts)
         export_menu.addAction(self._export_bouts_action)
-        
+
+        self._export_roi_corrections_action = QAction("Export ROI Corrections...", self)
+        self._export_roi_corrections_action.setToolTip(
+            "Select a dataset in the Data Explorer first — writes the saved ROI hand-corrections "
+            "(for the lab to apply in full WHISKER) as plain JSON to a folder you pick."
+        )
+        self._export_roi_corrections_action.triggered.connect(self._export_roi_corrections)
+        export_menu.addAction(self._export_roi_corrections_action)
+
         file_menu.addSeparator()
         
         exit_action = QAction("Exit", self)
@@ -332,6 +350,7 @@ class MainWindow(QMainWindow):
         workflows = [
             Workflow.POSE_ESTIMATION,
             Workflow.BEHAVIOR_CLASSIFICATION,
+            Workflow.ROI_TRACKING,
         ]
         
         self._workflow_actions = {}
@@ -800,6 +819,7 @@ class MainWindow(QMainWindow):
         self._export_charts_action.setEnabled(has_workspace and has_dataset and has_model_run)
         self._export_jitter_action.setEnabled(has_workspace and has_dataset and has_model_run)
         self._export_bouts_action.setEnabled(has_workspace and has_dataset and has_model_run)
+        self._export_roi_corrections_action.setEnabled(has_workspace and has_dataset)
         
         # Selection Actions
         self._prev_item_action.setEnabled(has_workspace)
@@ -836,6 +856,55 @@ class MainWindow(QMainWindow):
         dataset_name, _ = self._get_active_dataset_and_video()
         if hasattr(self.data_explorer, "action_handler"):
             self.data_explorer.action_handler.show_export_dialog(preselect=dataset_name)
+
+    def _export_roi_corrections(self):
+        """Writes the dataset's saved ROI corrections files (one small JSON per hand-corrected video) to a folder
+        the user picks, so they can be sent back to the lab and applied there. They already live at
+        ``workflows/roi_tracking/corrections/<run>/<dataset>/<video_stem>.json``, autosaved as edits are made --
+        this is a plain copy of those files, not a regeneration."""
+        dataset_name, _ = self._get_active_dataset_and_video()
+        if not (self._workspace and dataset_name):
+            return
+
+        runs = self._workspace.list_roi_runs(dataset_name)
+        if not runs:
+            QMessageBox.information(
+                self, "No ROI Corrections",
+                f"'{dataset_name}' has no ROI prediction runs to have corrections for."
+            )
+            return
+
+        run_name = runs[0]
+        if len(runs) > 1:
+            run_name, ok = QInputDialog.getItem(
+                self, "Export ROI Corrections", "Run:", runs, 0, editable=False
+            )
+            if not ok:
+                return
+
+        corrections_dir = self._workspace.roi_corrections.base_dir / run_name / dataset_name
+        correction_files = sorted(corrections_dir.glob("*.json")) if corrections_dir.is_dir() else []
+        if not correction_files:
+            QMessageBox.information(
+                self, "No ROI Corrections",
+                f"No videos have been hand-corrected yet for '{dataset_name}' in run '{run_name}'."
+            )
+            return
+
+        dest_dir = QFileDialog.getExistingDirectory(self, "Export ROI Corrections To...")
+        if not dest_dir:
+            return
+
+        import shutil
+        dest_path = Path(dest_dir) / f"roi_corrections_{dataset_name}_{run_name}"
+        dest_path.mkdir(parents=True, exist_ok=True)
+        for f in correction_files:
+            shutil.copy2(f, dest_path / f.name)
+
+        QMessageBox.information(
+            self, "Export Complete",
+            f"Exported {len(correction_files)} correction file(s) to:\n{dest_path}"
+        )
 
     def _export_behavior_charts(self):
         dataset_name, _ = self._get_active_dataset_and_video()
@@ -948,6 +1017,7 @@ class MainWindow(QMainWindow):
                 workflow_themes = {
                     "Pose Estimation": "Lilac Mist",
                     "Behavior Classification": "Sage Forest",
+                    "ROI Tracking": "Slate Blue",
                 }
                 target_style = workflow_themes.get(workflow_name)
         else:

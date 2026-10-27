@@ -11,6 +11,7 @@ from whisker.gui.workflows.pose_estimation.tabs import (
 from whisker.gui.workflows.behavior_classification.tabs import (
     LabelingBehaviorsTab,
 )
+from whisker.gui.workflows.roi_tracking.tabs.labeling import RoiTrackingLabelingTab
 
 
 class WelcomeView(WelcomeTab):
@@ -40,6 +41,8 @@ class LabelView:
             obj = LabelingPosesTab(parent)
         elif workflow_name == "Behavior Classification":
             obj = LabelingBehaviorsTab(parent)
+        elif workflow_name == "ROI Tracking":
+            obj = RoiTrackingLabelingTab(parent)
         else:
             raise ValueError(f"Unknown workflow: {workflow_name}")
         obj.bridge = bridge

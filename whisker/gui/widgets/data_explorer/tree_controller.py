@@ -135,6 +135,9 @@ ORDERED_DATASET_TYPES_BY_WORKFLOW = {
     Workflow.BEHAVIOR_CLASSIFICATION: [
         DatasetType.VIDEO_COLLECTION,
     ],
+    Workflow.ROI_TRACKING: [
+        DatasetType.VIDEO_COLLECTION,
+    ],
 }
 
 class TreeItemIndicator(ABC):
@@ -240,6 +243,13 @@ class LabelStatusIndicator(TreeItemIndicator):
                 return workspace.get_pose_labeled_image_keys_from_summary(dataset.name)
             case Workflow.BEHAVIOR_CLASSIFICATION:
                 return workspace.get_behavior_labeled_video_keys(dataset.name)
+            case Workflow.ROI_TRACKING:
+                # "Labeled" means "has a saved correction" for this workflow (there is no hand-drawn label step
+                # in the labeler itself -- arenas come in with the imported bundle). Corrections are keyed by
+                # video stem; translate back to the dataset's own file names to match _normalize_paths
+                # (Path(p).name).
+                stems = workspace.get_roi_corrections_labeled_video_keys(dataset.name)
+                return {Path(f).name for f in dataset.files if Path(f).stem in stems}
         return set()
 
     def _check_not_applicable(self, dataset: Dataset, workflow: Workflow) -> bool:
@@ -484,6 +494,9 @@ class TreeController:
             case Workflow.BEHAVIOR_CLASSIFICATION:
                 predictions = list(self._workspace.behavior_predictions._behavior_predictions.keys())
                 header = "Behavior Predictions"
+            case Workflow.ROI_TRACKING:
+                predictions = list(self._workspace.roi_predictions._known.keys())
+                header = "ROI Tracking Predictions"
             case _:
                 return
 
