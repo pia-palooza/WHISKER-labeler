@@ -8,7 +8,6 @@ from PyQt6.QtGui import QCloseEvent, QKeySequence, QAction
 from PyQt6.QtWidgets import QSizePolicy
 from PyQt6.QtWidgets import (
     QMainWindow,
-    QDialog,
     QFileDialog,
     QComboBox,
     QWidget,
@@ -218,15 +217,6 @@ class MainWindow(QMainWindow):
         
         self._create_detector_action = QAction("Create Detector Dataset...", self)
         file_menu.addAction(self._create_detector_action)
-
-        self._import_whisker_bundle_action = QAction("Import Whisker Bundle...", self)
-        self._import_whisker_bundle_action.setToolTip(
-            "Import a dataset, its ROI Tracking labels/predictions, and any project(s) from a bundle zip "
-            "exported by full WHISKER's 'Export Whisker Bundle...'. Other content in the bundle (pose, "
-            "behavior, animal detection, models) is ignored."
-        )
-        self._import_whisker_bundle_action.triggered.connect(self._import_whisker_bundle)
-        file_menu.addAction(self._import_whisker_bundle_action)
 
         file_menu.addSeparator()
         
@@ -796,7 +786,6 @@ class MainWindow(QMainWindow):
         self._new_ds_action.setEnabled(has_workspace and has_project)
         self._import_labels_action.setEnabled(has_workspace and has_project)
         self._create_detector_action.setEnabled(has_workspace and has_project)
-        self._import_whisker_bundle_action.setEnabled(has_workspace)
         self._refresh_ws_action.setEnabled(has_workspace)
         self._proj_settings_action.setEnabled(has_workspace and has_project)
         
@@ -849,27 +838,6 @@ class MainWindow(QMainWindow):
         dataset_name, _ = self._get_active_dataset_and_video()
         if dataset_name and hasattr(self.data_explorer, "action_handler"):
             self.data_explorer.action_handler._export_annotations(dataset_name)
-
-    def _import_whisker_bundle(self):
-        """Opens the Import Whisker Bundle dialog and, on success, rescans the workspace so the imported
-        dataset/ROI content/project(s) show up immediately (brief section 5.2)."""
-        if not self._workspace:
-            QMessageBox.warning(self, "No Workspace", "Open a workspace before importing a bundle.")
-            return
-
-        from whisker.gui.dialogs.import_whisker_bundle_dialog import ImportWhiskerBundleDialog
-        dialog = ImportWhiskerBundleDialog(self._workspace, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.report is None:
-            return
-
-        from whisker.core import whisker_bundle_import as wbi
-        wbi.rescan_workspace(self._workspace)
-        bus = MessageBus.get()
-        bus.publish("request/workspace/projects/refresh")
-        bus.publish("request/workspace/datasets/refresh")
-        bus.publish("request/workspace/labels/refresh")
-        bus.publish("request/workspace/predictions/refresh")
-        QMessageBox.information(self, "Import Complete", dialog.report.summary())
 
     def _export_roi_corrections(self):
         """Writes the dataset's saved ROI corrections files (one small JSON per hand-corrected video) to a folder
