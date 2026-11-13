@@ -7,6 +7,7 @@ deep-learning frameworks. Use it to:
 
 - place **pose keypoints** on images / extracted frames (the **Pose Estimation** workflow)
 - mark **behavior bouts** on videos (the **Behavior Classification** workflow)
+- hand-correct animal positions in an ROI-tracking prediction run (the **ROI Tracking** workflow)
 
 Labels are saved in the **exact HDF5 layout the full WHISKER app uses**, so your
 annotations move straight into WHISKER for model training.
@@ -21,8 +22,8 @@ annotations move straight into WHISKER for model training.
 It's the same shell as full WHISKER, so if you've used WHISKER it will feel
 identical:
 
-- A left **Navigation** panel where you pick a **Workflow** — *Pose Estimation*
-  or *Behavior Classification* — and a **Task**.
+- A left **Navigation** panel where you pick a **Workflow** — *Pose Estimation*,
+  *Behavior Classification*, or *ROI Tracking* — and a **Task**.
 - A **Data Explorer** listing every dataset and its files, with a ✓ on files
   you've already labeled.
 - A menu bar (**File / Edit / Selection / View / Tools / Help**) and a
@@ -196,6 +197,31 @@ create the bout. Bouts appear in the table and on the timeline strip.
 | `Ctrl+S` | Save |
 
 Move between videos with the Data Explorer.
+
+### ROI Tracking (hand-correct animal positions)
+
+Step through the gaps in an imported prediction run and fix the animal's position frame by frame.
+Unlike Pose/Behavior, there's nothing to label from scratch here — you're verifying and correcting
+an existing run, imported as a **Whisker bundle** (below).
+
+Turn on **Edit mode** (`E`) to place/move/remove a position; the bottom strip colors each frame by
+status (missing, detected, auto-filled, hand-edited). For a long gap, turn on **Fill gaps** to
+auto-advance through just the frames that need a decision — the frames in between are filled in
+automatically from the nearest hand-set position.
+
+| Key | Action |
+| --- | --- |
+| `N` / `M` | Previous / next frame |
+| `G` / `Shift+G` | Jump to the previous / next gap |
+| `E` | Toggle edit mode |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+| Click | Place / move a position (in edit mode) |
+| Drag | Fine-tune a position (in edit mode) |
+| Right-click | Remove a position (in edit mode) |
+
+Your corrections autosave as you work. Send them back with **File → Export → Export ROI
+Corrections...** — this writes plain JSON (not a Whisker bundle) for the lab to apply to the run
+in full WHISKER; it isn't a format full WHISKER's own bundle importer reads directly.
 
 ---
 

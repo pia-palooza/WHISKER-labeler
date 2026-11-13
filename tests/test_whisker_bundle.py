@@ -55,7 +55,16 @@ class ManifestRules(BundleCase):
 
     def test_a_newer_format_version_is_refused(self):
         with self.assertRaisesRegex(wb.BundleError, "newer"):
-            wb.WhiskerBundle.open(self.make_bundle(extra_manifest={"format_version": 2}))
+            wb.WhiskerBundle.open(self.make_bundle(extra_manifest={"format_version": 3}))
+
+    def test_format_version_2_is_accepted_and_media_included_is_read(self):
+        p = self.make_bundle(extra_manifest={"format_version": 2, "datasets": [
+            {**ds_entry("ds", files=["a/f1.png", "a/f2.png"]), "media_included": False}]})
+        self.assertFalse(self.open(p).manifest.datasets[0].media_included)
+
+    def test_media_included_defaults_to_true(self):
+        b = self.open(self.make_bundle())
+        self.assertTrue(b.manifest.datasets[0].media_included)
 
     def test_a_zip_that_is_not_a_whisker_bundle_is_refused(self):
         p = self.tmp / "other.zip"
@@ -428,6 +437,15 @@ class Importing(BundleCase):
         with self.assertRaisesRegex(wb.BundleError, "never"):
             self.do_import(p, media_root=media_root)
         self.assertEqual((media_root / "vids" / "originals.mp4").read_bytes(), b"precious")
+
+    def test_a_dataset_exported_without_media_is_refused(self):
+        p = self.make_bundle(extra_manifest={"format_version": 2, "datasets": [
+            {**ds_entry("ds", files=["a/f1.png", "a/f2.png"]), "media_included": False}]})
+        b = self.open(p)
+        items = {i.key: i for i in wb.plan_import(self.ws, b)}
+        self.assertIn("media", items[wb.dataset_key("ds")].problem)
+        problems = wb.validate_choices(self.ws, b, {wb.dataset_key("ds")}, None)
+        self.assertTrue(any("media" in p for p in problems))
 
     def test_only_what_is_ticked_is_imported(self):
         self.do_import(self.make_bundle(project="proj"), chosen={wb.dataset_key("ds")})

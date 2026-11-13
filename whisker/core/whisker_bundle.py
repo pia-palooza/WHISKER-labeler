@@ -48,7 +48,14 @@ from whisker.core.study.dataset_operations import _link_or_copy
 logger = logging.getLogger(__name__)
 
 FORMAT = "whisker-bundle"
-FORMAT_VERSION = 1
+# The newest manifest shape this build can read. Version 2 (full WHISKER) adds bundled model
+# weights and datasets exported "by reference" (``media_included: false``, their media left out of
+# the zip) - this build still refuses those specific datasets/models (see plan_import), it just no
+# longer refuses the whole bundle merely for *containing* a feature it doesn't support.
+FORMAT_VERSION = 2
+# What this tool writes into a bundle it creates. Always 1: exporting never excludes media or bundles
+# models, so nothing here ever needs the version-2 features.
+EXPORT_FORMAT_VERSION = 1
 MANIFEST_NAME = "whisker_bundle.json"
 WHISKER_VERSION = "0.1.0"      # what this tool writes into ``whisker_version``; WHISKER itself writes its own
 
@@ -133,6 +140,7 @@ class DatasetEntry:
     label_workflows: List[str] = field(default_factory=list)
     multi_arena: bool = False
     original_base_data_path: str = ""
+    media_included: bool = True     # False: exported "by reference" (format version 2); not supported here
 
     @property
     def type(self) -> Optional[DatasetType]:
@@ -181,7 +189,9 @@ def _as_str_list(value) -> List[str]:
 
 
 def parse_manifest(raw: object) -> BundleManifest:
-    """Read ``whisker_bundle.json``. Fields this version doesn't know are ignored; a newer format version is refused."""
+    """Read ``whisker_bundle.json``. Fields this version doesn't know are ignored; a newer format version is
+    refused. In particular, a top-level ``models`` list (bundled model weights, format version 2) is ignored
+    outright - the labeler has no model training/prediction, so there's nothing to import them into."""
     if not isinstance(raw, dict) or raw.get("format") != FORMAT:
         raise BundleError("This isn't a Whisker bundle (its whisker_bundle.json doesn't say 'whisker-bundle').")
     version = _as_int(raw.get("format_version"), -1)
@@ -214,6 +224,7 @@ def parse_manifest(raw: object) -> BundleManifest:
             label_workflows=[check_component(w, "workflow") for w in _as_str_list(d.get("label_workflows"))],
             multi_arena=bool(d.get("multi_arena", False)),
             original_base_data_path=str(d.get("original_base_data_path", "")),
+            media_included=bool(d.get("media_included", True)),
         ))
     for r in raw.get("prediction_runs") or []:
         if isinstance(r, dict):
@@ -395,6 +406,9 @@ def plan_import(workspace, bundle: WhiskerBundle) -> List[PlanItem]:
             problem = f"Unsupported dataset type '{d.type_name}'."
         elif not bundle.has(f"{DATASETS_DIR}/{d.name}/{DATASET_MANIFEST}"):
             problem = "The bundle has no manifest for this dataset."
+        elif not d.media_included:
+            problem = ("This dataset's media wasn't copied into the bundle (it was exported \"by reference\"); "
+                       "the labeler needs the media itself to label it. Re-export it from WHISKER with media included.")
         else:
             problem = _bad_folder_name(d.name)
         media = "frames" if kind in (DatasetType.FRAME_SUBSET, DatasetType.IMAGE_COLLECTION) else "videos"
@@ -939,7 +953,7 @@ def build_export_plan(
 def _manifest_json(plan: ExportPlan, workspace) -> bytes:
     manifest = {
         "format": FORMAT,
-        "format_version": FORMAT_VERSION,
+        "format_version": EXPORT_FORMAT_VERSION,
         "whisker_version": WHISKER_VERSION,
         "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "source_workspace": Path(workspace.base_dir).name,
