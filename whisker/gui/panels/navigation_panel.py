@@ -10,7 +10,7 @@ from ..topics import gui as gui
 from ..constants import ASSETS_DIR
 from ..task_views import (
     WelcomeView, ProjectsView, InfoView, JobsView,
-    LabelView
+    LabelView, EvaluateView
 )
 
 TASKS_LAYOUT_SCHEMA = (
@@ -19,6 +19,7 @@ TASKS_LAYOUT_SCHEMA = (
     ("global", "❖ Info", lambda bridge, _: InfoView(bridge)),
     ("global", "❖ Jobs", lambda bridge, _: JobsView(bridge)),
     ("workflow", "❖ Label", lambda bridge, wf: LabelView(bridge, wf)),
+    ("workflow", "❖ Evaluate", lambda bridge, wf: EvaluateView(wf)),
 )
 
 WORKFLOW_COLORS = [ "orange", "blue", "magenta", "green" ]

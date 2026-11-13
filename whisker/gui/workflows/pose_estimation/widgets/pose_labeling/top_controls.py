@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 import pandas as pd
 
-from PyQt6.QtCore import QPointF, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox, QWidget, QHBoxLayout, QLabel, QPushButton, QCheckBox
 )
@@ -11,9 +11,9 @@ from PyQt6.QtWidgets import (
 from whisker.services.pose_estimation.public.prediction_operations import PosePredictionOperations
 from whisker.core.study.dataset import Dataset
 from whisker.core.study.project import Project
-from whisker.services.pose_estimation.public.data_structures import PoseDataset
 from whisker.gui.constants import KEYPOINT_QCOLORS
 from whisker.gui.signals import MessageBus
+from ..pose_overlay import build_pose_overlay_points
 
 
 class PoseLabelingTopControlsWidget(QWidget):
@@ -80,81 +80,46 @@ class PoseLabelingTopControlsWidget(QWidget):
         show_preds = self.show_preds_checkbox.isChecked()
         model_name = self.pred_model_combo.currentText()
 
-        if not show_preds or not model_name or not self._pose_prediction_operations or not self._image_path:
+        if not show_preds or not model_name or not self._pose_prediction_operations or not self._image_path or not self._dataset:
             self.clear_predictions_requested.emit()
             return
 
-        dataset_name = self._dataset.name
         try:
-            preds = self._pose_prediction_operations.get_pose_predictions(
-                model_name, dataset_name, video_stem=None, raise_if_missing=False
+            image_df = self._pose_prediction_operations.get_pose_predictions_for_image(
+                model_name, self._dataset, self._image_rel_path()
             )
-            if preds:
-                self._format_and_display(preds)
+            if image_df is not None:
+                self._format_and_display(image_df)
             else:
                 self.clear_predictions_requested.emit()
         except Exception as e:
             logging.error(f"[Primer] Error loading predictions: {e}")
             self.clear_predictions_requested.emit()
 
-    def _format_and_display(self, pose_data: PoseDataset):
+    def _image_rel_path(self) -> str:
         dataset_base = Path(self._dataset.base_data_path)
-        image_key = str(self._image_path.relative_to(dataset_base)).replace("\\", "/")
-        
-        try:
-            image_df = pose_data.keypoint_data.loc[image_key]
-        except KeyError:
-            self.clear_predictions_requested.emit()
-            return
+        return str(self._image_path.relative_to(dataset_base)).replace("\\", "/")
 
-        points_data = []
-        for identity_id in self._project.identities:
-            try:
-                inst_df = image_df.loc[identity_id]
-            except KeyError: 
-                continue
+    def _format_and_display(self, image_df):
+        def color_for(identity_id):
+            color_idx = self._project.identities.index(identity_id)
+            return KEYPOINT_QCOLORS[color_idx % len(KEYPOINT_QCOLORS)]
 
-            points = {}
-            if isinstance(inst_df, pd.Series):
-                if pd.notna(inst_df.get('c')) and inst_df.get('c', 0) > 0.1:
-                    points[inst_df.name] = QPointF(inst_df['x'], inst_df['y'])
-            else:
-                valid_rows = inst_df[(inst_df['c'] > 0.1) & inst_df['c'].notna()]
-                for bp_name, row in valid_rows.iterrows():
-                    points[str(bp_name)] = QPointF(row['x'], row['y'])
-
-            lines = [
-                (points[p1], points[p2]) 
-                for p1, p2 in self._project.skeleton 
-                if p1 in points and p2 in points
-            ]
-
-            if points or lines:
-                color_idx = self._project.identities.index(identity_id)
-                color = KEYPOINT_QCOLORS[color_idx % len(KEYPOINT_QCOLORS)]
-                points_data.append({
-                    "name": identity_id,
-                    "color": color,
-                    "points": points,
-                    "lines": lines,
-                })
-                
+        points_data = build_pose_overlay_points(
+            image_df, self._project.identities, self._project.skeleton, color_for
+        )
         self.display_predictions_requested.emit(points_data)
 
     def _on_accept(self):
         model_name = self.pred_model_combo.currentText()
-        if not model_name or not self._pose_prediction_operations:
+        if not model_name or not self._pose_prediction_operations or not self._dataset:
             return
-            
-        dataset_base = Path(self._dataset.base_data_path)
-        image_key = str(self._image_path.relative_to(dataset_base)).replace("\\", "/")
 
         try:
-            preds = self._pose_prediction_operations.get_pose_predictions(
-                model_name, self._dataset.name, video_stem=None, raise_if_missing=False
+            image_df = self._pose_prediction_operations.get_pose_predictions_for_image(
+                model_name, self._dataset, self._image_rel_path()
             )
-            if preds:
-                image_df = preds.keypoint_data.loc[image_key]
+            if image_df is not None:
                 self.accept_predictions_requested.emit(image_df, 0.1)
                 self.show_preds_checkbox.setChecked(False)
         except Exception as e:

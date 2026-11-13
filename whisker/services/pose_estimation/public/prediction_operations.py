@@ -2,17 +2,21 @@
 import logging
 import json
 import os
+import re
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from typing import Optional, Set, Dict, List, Any
 
 from whisker.core.base_workflow_operation_helper import BaseWorkflowOperationsHelper
-from whisker.core.study.dataset import DatasetType
+from whisker.core.study.dataset import Dataset, DatasetType
 from whisker.core.study.dataset_operations import DatasetOperations
 from whisker.core.study.project_operations import ProjectOperations
 
 from .data_structures import PoseDataset
 from .label_operations import PoseLabelOperations
+
+_SAMPLED_SUFFIX = " [Manual Samples]"
 
 class PosePredictionOperations(BaseWorkflowOperationsHelper):
     def __init__(
@@ -200,6 +204,67 @@ class PosePredictionOperations(BaseWorkflowOperationsHelper):
                 self._load_and_cache(training_run_name, dataset_name, None, dataset_predictions)
                 
             return dataset_predictions[None]
+
+    def get_pose_predictions_for_image(
+        self,
+        training_run_name: str,
+        dataset: Dataset,
+        image_rel_path: str,
+    ) -> Optional[pd.DataFrame]:
+        """Predictions for one frame of ``dataset``: looked up directly if ``training_run_name``
+        predicted this exact dataset, or - when ``dataset`` is a FRAME_SUBSET sampled from a video
+        (see ``sampling.save_manual_frames``, which names the result "{video dataset} [Manual
+        Samples]") - resolved from that video's own (per-arena) predictions, which are stored under
+        the video dataset's name and video_stem, not the sample's. Returns ``None`` if no
+        predictions are found either way (never raises)."""
+        direct = self.get_pose_predictions(training_run_name, dataset.name, video_stem=None, raise_if_missing=False)
+        if direct is not None:
+            try:
+                return direct.keypoint_data.loc[image_rel_path]
+            except KeyError:
+                pass
+        return self._resolve_from_source_video(training_run_name, dataset, image_rel_path)
+
+    def _resolve_from_source_video(
+        self,
+        training_run_name: str,
+        dataset: Dataset,
+        image_rel_path: str,
+    ) -> Optional[pd.DataFrame]:
+        if dataset.type != DatasetType.FRAME_SUBSET or not dataset.name.endswith(_SAMPLED_SUFFIX):
+            return None
+        source_name = dataset.name[: -len(_SAMPLED_SUFFIX)]
+        source = self._datasets.get(source_name)
+        if source is None or source.type != DatasetType.VIDEO_COLLECTION:
+            return None
+
+        rel_path = str(image_rel_path).replace("\\", "/")
+        if "/" not in rel_path:
+            return None
+        out_subdir, filename = rel_path.split("/", 1)
+        frame_match = re.match(r"frame_(?P<idx>\d+)\.", filename)
+        if not frame_match:
+            return None
+        frame_idx = int(frame_match.group("idx"))
+
+        video_rel = None
+        if source.multi_arena is not None:
+            resolved = source.multi_arena.resolve_arena_stem(out_subdir)
+            if resolved is not None:
+                video_rel = resolved[0]
+        if video_rel is None:
+            video_rel = next((f for f in source.files if Path(f).stem == out_subdir), None)
+        if video_rel is None:
+            return None
+
+        preds = self.get_pose_predictions(training_run_name, source_name, video_stem=out_subdir, raise_if_missing=False)
+        if preds is None:
+            return None
+        frame_key = f"{video_rel}/frame_{frame_idx:06d}"
+        try:
+            return preds.keypoint_data.loc[frame_key]
+        except KeyError:
+            return None
 
     def get_models_with_predictions_for_dataset(self, dataset_name: str) -> list[str]:
         models = []

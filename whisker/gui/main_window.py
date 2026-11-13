@@ -373,7 +373,8 @@ class MainWindow(QMainWindow):
             ("Welcome", "Ctrl+1", "❖ Welcome"),
             ("Info", "Ctrl+2", "❖ Info"),
             ("Jobs", "Ctrl+3", "❖ Jobs"),
-            ("Label", "Ctrl+5", "❖ Label")
+            ("Label", "Ctrl+5", "❖ Label"),
+            ("Evaluate", "Ctrl+6", "❖ Evaluate"),
         ]
         for label, shortcut, view_name in tasks_list:
             action = QAction(label, self)
