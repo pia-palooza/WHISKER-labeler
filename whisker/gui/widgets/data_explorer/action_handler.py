@@ -560,12 +560,23 @@ class ActionHandler(QObject):
                 dataset_name = hierarchy[1]
                 video_relative_path = hierarchy[-1]
                 video_stem = Path(video_relative_path).stem
-                
+
+                # Copy the folder this video actually lives in (handles datasets whose files sit
+                # in subfolders under base_data_path) - makes it easy to drop new videos alongside it.
+                dataset = self._workspace.datasets.get(dataset_name)
+                if dataset and dataset.base_data_path:
+                    video_folder = (Path(dataset.base_data_path) / video_relative_path).parent
+                    copy_path_action = menu.addAction("Copy Source Path")
+                    copy_path_action.triggered.connect(
+                        lambda: self._copy_path_to_clipboard(video_folder)
+                    )
+
                 if self._current_model_run:
                     # Check if predictions exist for this specific video
                     if self._workspace.behavior_predictions.has_behavior_prediction(
                         self._current_model_run, dataset_name, video_stem
                     ):
+                        menu.addSeparator()
                         export_menu = menu.addMenu("Export Prediction Results")
                         
                         export_clip_action = export_menu.addAction("Export Clip (.mp4)")
