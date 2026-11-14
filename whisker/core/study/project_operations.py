@@ -60,6 +60,7 @@ class ProjectOperations(BaseOperationHelper):
         )
         self.save_project(project_name)
         logging.info(f"Added project {project_name} to workspace")
+        return self._projects[project_name]
 
     def save_project(self, project_name: str):
         project = self._projects[project_name]
